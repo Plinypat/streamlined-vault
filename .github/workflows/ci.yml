@@ -1,0 +1,26 @@
+name: Validate Streamlined Vault
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: python -m unittest discover -s agent/tests -v
+      - name: Parse pilot installer without installing
+        shell: pwsh
+        run: |
+          $tokens=$null;$errors=$null
+          [Management.Automation.Language.Parser]::ParseFile((Resolve-Path agent/Install-Uploader.ps1),[ref]$tokens,[ref]$errors) | Out-Null
+          if($errors.Count){$errors;exit 1}

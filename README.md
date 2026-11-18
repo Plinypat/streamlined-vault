@@ -1,25 +1,22 @@
 # Streamlined Vault
 
-A branded MSP client portal for cloud file storage. Product name: Streamlined Vault. Intended domain: portal.streamlinedvault.com (not purchased or configured by this project).
+A branded MSP portal for practice file storage, plus a scheduled Windows uploader. Files live in cloud object storage; practices use existing computers, with no additional NAS or owned server required.
 
-## What is implemented
+## Current delivery: uploader pilot (v0.3)
 
-- Responsive sign-in, practice dashboard, searchable file browser and folder grouping.
-- MSP-created practice workspaces with decimal 4 TB quotas, memberships and viewer/editor/uploader/admin roles.
-- OIDC authorization-code sign-in with PKCE, nonce and state checks, verified email, required MFA assurance, server-side 15-minute sessions, same-origin CSRF protection and HttpOnly cookies.
-- A real server-side Backblaze B2 S3-compatible adapter: multipart creation, upload, completion, abort, HEAD verification, range downloads and encrypted writes.
-- SHA-256 checking of incoming upload parts, 16 MiB parts, per-part retries and browser-session pause/resume. Current maximum single file: 160,000 MiB (10,000 parts). Browser reselection after a page refresh is not implemented; the scheduled uploader supports restart/resume.
-- Recoverable trash and restore. Trash continues to count toward quota. No permanent purge, remote wipes or retention destruction is implemented.
-- Capacity alerts (in-app), object-size inventory checks and stale-upload cleanup on hourly/daily/weekly schedules. The backend must remain running. Inventory checks do not replace content integrity scans or recovery drills.
-- Expiring, hashed, practice-scoped upload-only or read-only tokens with revocation. Token creation is admin only; upload tokens cannot list or download existing files.
-- A branded Python uploader for scheduled local-folder uploads, no direct provider account or key required by the practice.
-- Tenant-scoped audit events and export. A hash chain helps detect some alterations, but it is not immutable or independently anchored. Production audit archival is an outstanding deployment task.
+- Portal: practice workspaces, 4 TB logical quotas, roles, file browsing, multipart uploads/downloads, trash/restore and activity history.
+- **Uploaders**, replacing the earlier cloud-automation UI: one-time 15-minute enrollment, upload-only device identity, pause, revoke, schedule editing, run-on-next-contact and run history.
+- Scheduled agent: every 15 minutes, hourly, every four hours, or selected days at a local time. The practice computer's clock controls the schedule. It must be awake and online.
+- One-way upload of new/changed files, retry/resume, unchanged-file skipping and single-instance locking. No source or cloud deletion. Changed files consume additional storage as separate objects.
+- Locally selected sources; cloud settings cannot choose new workstation folders or execute commands. Telemetry carries counts/status, not source paths.
+- Windows pilot installer uses Task Scheduler, a protected SYSTEM task and machine-encrypted DPAPI credentials. It requires PowerShell 7 and Python 3.10+ installed machine-wide under Program Files. It is an inspectable script, **not a signed executable installer**.
+- Backblaze B2 adapter stays server-side; provider credentials and raw provider URLs are not sent to client code. Live credentials have not been configured or tested.
 
-This is an implementation candidate, not a HIPAA compliance certification or a production deployment. No live B2 credentials have been supplied or used. B2 integration and OIDC MFA must be acceptance-tested with the chosen live services before release. The hosted Sites version is a synthetic browser demo; it does not run this Node backend.
+The implementation plan and remaining production gates are in [docs/IMPLEMENTATION-PLAN.md](docs/IMPLEMENTATION-PLAN.md). This repository is not evidence of HIPAA compliance. The hosted Sites publication is a synthetic frontend preview, not the live Node backend.
 
-## Start locally with synthetic files
+## Local synthetic-data development
 
-Node.js 24+ is required (uses built-in SQLite).
+Node.js 24+, Python 3.10+ and PowerShell 7 for installer parsing on Windows:
 
 ```powershell
 npm ci
@@ -27,64 +24,61 @@ Copy-Item .env.example .env
 npm start
 ```
 
-Open http://127.0.0.1:4173. In local test mode, files are stored on the development machine and metadata in `data/portal.sqlite`. The app binds only to loopback. It refuses to start demo mode with NODE_ENV=production. Never use patient data in demo mode. `npm test` exercises the backend with isolated temporary local storage.
-
-For a static browser-only preview, serve `dist/`. The app visibly enters preview mode and keeps selected synthetic files in browser memory only (100 MB per-file preview limit). Refresh removes these changes.
-
-## Production setup
-
-1. Register the domain in the business owner's registrar account, protect it with MFA, and confirm annual renewal pricing. The registry returned no record for streamlinedvault.com on November 17, 2026, but availability and final price remain subject to registrar checkout. Nothing has been purchased.
-2. Establish the necessary business-associate agreements between the practice and MSP, and with storage, hosting, identity and any other applicable subprocessors. The user confirmed having a B2 account, not an executed BAA. Confirm eligibility for the MSP/subcontractor arrangement directly with the provider. White labeling does not remove contractual/subprocessor disclosure obligations.
-3. Deploy the Node service in an approved hosting environment. An AWS EC2 Linux instance on encrypted EBS behind a TLS reverse proxy is one possible starting deployment; use an AWS BAA and review the whole architecture. No physical hardware needs to be bought by you or your practices. TLS terminates at the proxy. Keep the app port on loopback/private networking. Enforce request-size and connection limits at the proxy, no body buffering to unencrypted disk, and no file-name/query logging. The backend handles file content, so its hosting belongs in the PHI boundary. Plan for proxy bandwidth, upload duration, egress, monitoring and capacity.
-4. Create a private B2 bucket in the intended region, confirm encryption for newly uploaded objects, and generate a non-master bucket-restricted application key with only necessary list/read/write capabilities. The portal uses opaque object IDs (`tenants/<workspace-id>/objects/<file-id>`), never patient names as storage object keys. Human-readable file and folder names are in the metadata database and can contain PHI; protect the database accordingly. The current adapter uses one restricted bucket and application-enforced tenant prefixes. Separate buckets/credentials per practice can be added for stronger provider-side isolation; do not describe the present implementation as separate provider accounts.
-5. Put secrets in a protected server environment or secret manager. Fill in STORAGE_ENDPOINT, STORAGE_REGION, STORAGE_BUCKET, STORAGE_KEY_ID and STORAGE_APPLICATION_KEY from your own account. Never enter provider secrets into the client portal, JavaScript bundle, chat, source control, or a domain registrar.
-6. Configure an OIDC identity provider with exact redirect `https://portal.streamlinedvault.com/auth/callback`, verified email and mandatory MFA. Provide OIDC_ISSUER, OIDC_CLIENT_ID and optional client secret. The current implementation requires the provider to supply a verified `amr` claim matching OIDC_MFA_AMR; acceptance-test this before release. Not all providers emit this claim identically. Do not bypass the check if sign-in fails; adapt the assurance check to documented IdP policy/claims and test it. Keep the issuer fixed to an administrator-controlled trusted provider. Authentication enrollments/password recovery are delegated to that provider, not recreated here.
-7. Set MSP_ADMINS to verified administrator email addresses. Create practices, then assign members. Adding a member grants an existing verified identity access; it does not send an email or provision an IdP account. Configure IdP invitations/enrollment separately. MSP admins can access all practices; ordinary members are checked for current membership on every request. Arrange explicit MSP support-access policy and access reviews.
-8. Set APP_ORIGIN to the HTTPS origin, NODE_ENV=production and DEMO_MODE=false. Set PROVIDER_BAA_CONFIRMED and HOSTING_APPROVED_FOR_PHI only after the reviews they represent are complete. These are operator activation switches, not automated compliance assessments.
-9. Store the SQLite database, WAL and metadata on encrypted persistent disk with strict OS permissions. Back them up consistently; the database holds the mapping from opaque cloud objects to practice ownership and filenames. Test restoring both metadata and objects. Do not run multiple portal replicas against a shared SQLite file. A managed database and a durable queue/worker are needed for horizontal scaling; the present scheduler is a single-process implementation.
-10. Complete security and live acceptance testing described below before admitting PHI. Disable/suppress PHI in analytics, crash reporting, logs and email. Define retention, incident response, token rotation, user termination and availability/recovery targets. No browser analytics or third-party fonts are included.
-
-## White-label boundary
-
-Clients see only Streamlined Vault product text and your portal origin for API calls, uploads and downloads. Long-lived provider secrets, storage bucket names, upstream upload URLs and raw provider errors remain on the server. Downloads stream as attachments and are not rendered as diagnostic images. No medical image viewer is included.
-
-Traffic is proxied through your backend to avoid exposing provider endpoints in browser network requests. This is not a promise that a vendor can never be inferred through network analysis or server incidents. Required legal, contractual and subprocessor disclosures must remain accurate. Do not use a direct-to-provider signed upload URL if hiding its hostname is a requirement.
-
-## Automations without provider branding
-
-The portal offers scheduled capacity checks, size inventories and abandoned multipart cleanup. They run every 30 seconds when due; alerts stay in the in-app notification center. Email, webhooks, calendar integrations, file mirroring and arbitrary scripts are not implemented.
-
-For upload automation, create an upload-only token in Automations. On a practice computer, place the token in a protected file outside the source folder and protect the uploader state directory. The tool has no provider branding, endpoints or application keys. Use Python 3.10+:
+Visit http://127.0.0.1:4173. Local test mode binds to loopback and stores synthetic files in `data/`; it refuses production mode. Static hosting of `dist/` instead gives an in-memory browser demo (100 MB per synthetic file, resets on refresh). Never enter patient data or real credentials into preview mode.
 
 ```powershell
-python tools/vault-uploader.py --portal https://portal.streamlinedvault.com --workspace YOUR_WORKSPACE_ID --source "D:\Imaging Exports" --token-file "C:\ProgramData\StreamlinedVault\token.txt" --state "C:\ProgramData\StreamlinedVault\state.json" --folder Imaging
+npm run check
+npm test
+python -m unittest discover -s agent/tests -v
 ```
 
-Use Windows Task Scheduler to run that exact command every 15 minutes under a dedicated least-privileged service identity. Set **Do not start a new instance** if already running. Restrict token and state permissions to that identity and administrators, including backups. The agent skips files modified within the last two minutes, detects changes during transfer, resumes uploaded parts using its state file, does not follow symlinks outside the source, and never deletes local or cloud files. Changed files become separate stored objects; they consume additional quota. It is one-way upload, not a bidirectional sync or a database-consistent backup agent. The client computer must be online; no NAS or owned server hardware is required. Tokens expire within 90 days, so arrange rotation and failure monitoring.
+Tests cover access/tenant isolation, CSRF, quotas, multipart integrity, downloads, trash recovery, device enrollment/replay/renewal, revocation/pause, schedules, OS locking and Windows DPAPI. The synthetic end-to-end test enrolls an agent, uploads real bytes through the local API, reports results, and skips the unchanged file on a subsequent run. Live B2, Neon, Cognito, actual installation under SYSTEM, signed distribution and live large-file performance have not been acceptance-tested.
 
-## Important operating limits
+## Pilot uploader installation
 
-- Browser pause/resume works within the current page session. Agent resume persists across runs using the protected state file. Background transfers cannot continue after the browser closes.
-- Completion interrupted after the provider accepted the file may require administrator reconciliation if metadata is left in `finishing`. Do not simply discard the reservation; verify the object and its size/version and record the reconciliation. Production reconciliation tooling is a remaining task.
-- Multipart reservations and trash count toward the logical 4 TB quota. The meter does not represent the entire provider bill. Orphaned objects, provider versions, delayed cleanup, logs and metadata need separate billing reconciliation. Do not make unbounded retention promises from this meter.
-- Existing files uploaded outside the portal are not automatically imported. Use a reviewed import/migration job to assign ownership and metadata; never expose a global bucket listing to clients.
-- Object Lock, legal holds, automatic permanent purge, external sharing links, provider account creation and provider credential rotation UI are deliberately outside this release. They need policy and provider-integration work before exposure. This is a client file portal, not a clone of every provider administration API.
-- Rate limits are per application instance. Set an additional edge/IP limit at production ingress. A single in-memory scheduler and SQLite process are suitable for a bounded pilot, not multi-region HA.
+Use a separate synthetic-data pilot machine. First deploy the backend on an approved HTTPS origin, enroll a practice in the portal, then create an uploader with the desired schedule. The portal displays a one-use credential valid for 15 minutes.
 
-## Acceptance checklist and evidence
+From an elevated **PowerShell 7** terminal in this source package:
 
-Automated local tests cover: unauthenticated denial; CSRF/origin checks; practice boundaries; MSP-only provisioning; part checksum and size validation; byte-identical downloads and range requests; trash recovery; quota reservations and release; upload-token scope and revocation; and automation results. These use the local adapter, not live B2.
+```powershell
+./agent/Install-Uploader.ps1 -Portal https://portal.streamlinedvault.com -Source 'D:\Imaging Exports' -PythonPath 'C:\Program Files\Python312\python.exe'
+```
 
-Before live release, test with synthetic files in the real private bucket: login/MFA and denied memberships; 1-byte, multipart, interrupted and representative very large files; resume/retry behavior; maximum file limits; end-to-end checksums on downloaded files; no upstream hostname/secrets in browser responses; storage quota concurrency; expired/revoked users and tokens; recovery of database and cloud objects; alert monitoring; and restart/failed completion reconciliation. Conduct an independent security assessment and address findings. Configure off-host immutable audit export/retention and monitor scheduler failures before launch. Complete customer agreements, support/runbooks and documented risk analysis. The virtual-desktop idea remains excluded.
+The installer prompts for the enrollment credential; it is never placed in command-line arguments. It locks program/state folders to SYSTEM and Administrators, encrypts the returned device token using Windows DPAPI, and registers `Streamlined Vault Uploader` to start with Windows. It does not download Python or other software. Verify the official machine-wide Python installation and folder permissions before running. Source folders must be local absolute paths readable by SYSTEM; mapped drives and network shares need a separately designed service account. Do not select a parent folder containing uploader program files or its configuration.
 
-## Primary references checked November 17, 2026
+Verify the device's first contact, upload counts and downloaded file integrity in the portal. Pause takes effect between file parts; revocation is checked on API calls. The dashboard's Run on next contact command is not immediate execution on an offline computer. The token expires after 90 days; plan re-enrollment before expiry. A revoked credential cannot be restored; create a new device enrollment.
+
+The agent and metadata live under Program Files/ProgramData with restricted ACLs. Do not relocate credentials into source folders. Source folders are changed locally under administrator control. Do not run two enrolled agents with the same state directory. Don't edit metadata or delete resume state to force retries: investigate failed/finishing uploads first.
+
+To stop the pilot, stop and unregister its scheduled task and revoke the device in the portal. Keep any needed state for incident/recovery analysis. This does not delete locally stored or cloud files. Replacement/update procedures must preserve the machine's encrypted secret and local resume state. Automatic executable updates are not implemented; production rollout needs code signing, verified releases, rollback and a tested installer/update process.
+
+## Production services and boundaries
+
+- **Neon Postgres** is the agreed metadata target. The runtime currently still uses local SQLite. Migration is the next stage and has not been implemented or applied. Neon requires the appropriate plan, BAA and HIPAA project settings before PHI; development can use synthetic data.
+- **Cognito** is the agreed identity target. Existing code is generic OIDC with a strict MFA-claim check; it must be adapted/tested against Cognito's documented enrollment/MFA behavior, including initial-login tokens. Do not disable MFA verification to work around incompatible claims.
+- **B2** stores file objects, and private server credentials are configured only through protected environment variables/secret management. No API key should be pasted into chat or stored in Git. Validate MSP/subcontractor BAA terms directly with the provider.
+- **Hosting** is still undecided pending cost/transfer design review. AWS can host the pilot without physical hardware. A proxy handles file bytes, so its hosting falls inside the PHI boundary and its outbound transfer charges matter. Approved provider-branded endpoints may reduce proxy costs but are not configured here.
+- Domain registration/DNS ownership has not been verified by this application. Intended domain: portal.streamlinedvault.com.
+- Current tenant isolation uses one private bucket with server-enforced opaque tenant prefixes. Separate provider credentials/buckets/accounts require additional provisioning. Don't describe the current setup as separate provider accounts.
+- The metadata database contains sensitive filenames and account records. Protect it on encrypted persistent storage with backups. Current SQLite is a single-instance pilot adapter; don't share it across replicas.
+- Trash and pending reservations count toward logical quota. Provider versions/orphans may add billable usage outside that meter. Full billing reconciliation and provider/metadata restore drills are required.
+- Current hash-chained audit records are not immutable or independently anchored. Off-host audit retention/monitoring and tested incident procedures remain production tasks.
+- Default multipart part size is 16 MiB, with a maximum of 10,000 parts per file (160,000 MiB). Browser pause/resume lasts for the page session; the uploader persists resume state. Upload completion interrupted after provider acceptance can require administrator reconciliation; don't release quota or discard objects blindly.
+- No cloud cron task reads local practice folders. Old cloud capacity/inventory automation routes are removed. A background cleanup timer expires local sessions only. Legacy scoped token endpoints remain for the standalone command-line uploader.
+- Legal holds, destructive retention policies, external sharing, database-consistent backups, diagnostic image viewing and practice-software desktops are outside this pilot.
+
+## Operational setup before patient data
+
+Execute applicable BAAs with the practice and all relevant providers, complete risk analysis/access reviews, configure production TLS and secrets, MFA/recovery, database/object backups and restoration, failure/expiry monitoring, immutable audit archival, privacy-safe logging, code signing, support ownership and breach/incident procedures. Test production data isolation and lost/expired devices before go-live. UI branding does not remove required contractual/subprocessor disclosures.
+
+## References
 
 - https://www.backblaze.com/apidocs/introduction-to-the-s3-compatible-api
-- https://www.backblaze.com/docs/cloud-storage-s3-compatible-app-keys
 - https://www.backblaze.com/docs/cloud-storage-application-keys
 - https://www.backblaze.com/cloud-storage/compliance
-- https://help.backblaze.com/hc/en-us/articles/217667238-Backblaze-and-HIPAA
-- https://www.backblaze.com/docs/cloud-storage-object-lock
+- https://www.backblaze.com/docs/cloud-storage-present-a-branded-s3-endpoint
+- https://neon.com/docs/security/hipaa
+- https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-mfa.html
 - https://www.hhs.gov/hipaa/for-professionals/special-topics/health-information-technology/cloud-computing/index.html
 
-No provider references or credentials are included in the client-facing `dist/` assets. Technical provider references here are for the MSP operator's setup and accurate disclosures.
+These operator-only notes identify providers accurately; client-facing `dist/` assets contain no provider references or long-lived secrets.

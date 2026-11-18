@@ -20,7 +20,10 @@ def main():
     if not a.portal.startswith('https://'):
         p.error('HTTPS is required')
     if not a.source.is_dir(): p.error('Source must be an existing folder')
-    token=a.token_file.read_text().strip()
+    return run_upload(a)
+
+def run_upload(a, token=None, checkpoint=None):
+    token=token if token is not None else a.token_file.read_text().strip()
     state=json.loads(a.state.read_text()) if a.state.exists() else {}
     # Prevent accidental state reuse against a different workspace or portal.
     identity=hashlib.sha256((a.portal.rstrip('/')+'|'+a.workspace+'|'+str(a.source.resolve())).encode()).hexdigest()
@@ -49,7 +52,10 @@ def main():
                 if attempt==2:raise RuntimeError('Portal is unreachable') from None
             time.sleep(2**attempt)
     completed=failed=skipped=0
+    paused=False
     for path in sorted(a.source.rglob(a.include)):
+        if checkpoint and not checkpoint():
+            paused=True;break
         if not path.is_file() or path.is_symlink():continue
         if path.resolve() in [a.token_file.resolve(),a.state.resolve(),a.state.with_suffix('.tmp').resolve()]:continue
         # Also reject files reached through a symlinked parent outside the source tree.
@@ -78,10 +84,13 @@ def main():
             with path.open('rb') as f:
                 n=1
                 while True:
+                    if checkpoint and not checkpoint():
+                        paused=True;break
                     chunk=f.read(entry['partSize'])
                     if not chunk:break
                     if n not in sent:call('/uploads/'+entry['upload']+'/parts/'+str(n),'PUT',chunk)
                     n+=1
+            if paused:break
             current=path.stat()
             if current.st_mtime_ns!=st.st_mtime_ns or current.st_size!=st.st_size:
                 call('/uploads/'+entry['upload'],'DELETE');entry.pop('upload',None);save();raise RuntimeError('Source changed during transfer; retry on next run')
@@ -90,8 +99,10 @@ def main():
         except Exception as e:
             failed+=1
             # Do not emit filenames, tokens, provider responses or file contents into scheduler logs.
-            print('Transfer '+local_id[:12]+' failed: '+str(e),file=sys.stderr)
-    print(json.dumps({'uploaded':completed,'skipped':skipped,'failed':failed}))
+            print('Transfer '+local_id[:12]+' failed: '+(str(e) if isinstance(e,RuntimeError) else 'Local file access failed'),file=sys.stderr)
+    summary={'uploaded':completed,'skipped':skipped,'failed':failed,'status':'paused' if paused else 'failed' if failed else 'success'}
+    if checkpoint is not None:return summary
+    print(json.dumps(summary))
     return 1 if failed else 0
 
 if __name__=='__main__':sys.exit(main())
