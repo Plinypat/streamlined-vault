@@ -32,7 +32,7 @@ npm test
 python -m unittest discover -s agent/tests -v
 ```
 
-Tests cover access/tenant isolation, CSRF, quotas, multipart integrity, downloads, trash recovery, device enrollment/replay/renewal, revocation/pause, schedules, OS locking and Windows DPAPI. The synthetic end-to-end test enrolls an agent, uploads real bytes through the local API, reports results, and skips the unchanged file on a subsequent run. Live B2, Neon, Cognito, actual installation under SYSTEM, signed distribution and live large-file performance have not been acceptance-tested.
+Tests cover access/tenant isolation, CSRF, quotas, multipart integrity, downloads, trash recovery, device enrollment/replay/renewal, revocation/pause, schedules, OS locking and Windows DPAPI. The synthetic end-to-end test enrolls an agent, uploads real bytes through the local API, reports results, and skips the unchanged file on a subsequent run. Live B2, Neon runtime migration, Clerk browser login, actual installation under SYSTEM, signed distribution and live large-file performance have not been acceptance-tested.
 
 ## Pilot uploader installation
 
@@ -55,7 +55,7 @@ To stop the pilot, stop and unregister its scheduled task and revoke the device 
 ## Production services and boundaries
 
 - **Neon Postgres** is the agreed metadata target. The runtime currently still uses local SQLite. Migration is the next stage and has not been implemented or applied. Neon requires the appropriate plan, BAA and HIPAA project settings before PHI; development can use synthetic data.
-- **Cognito** is the agreed identity target. Existing code is generic OIDC with a strict MFA-claim check; it must be adapted/tested against Cognito's documented enrollment/MFA behavior, including initial-login tokens. Do not disable MFA verification to work around incompatible claims.
+- **Clerk** is the identity provider. The existing development application is linked, with mandatory authenticator MFA and backup codes. Server verification checks signed tokens, recent MFA, active sessions, verified email and application-owned membership. See docs/CLERK-SETUP.md for boundaries and remaining acceptance checks.
 - **B2** stores file objects, and private server credentials are configured only through protected environment variables/secret management. No API key should be pasted into chat or stored in Git. Validate MSP/subcontractor BAA terms directly with the provider.
 - **Hosting** is still undecided pending cost/transfer design review. AWS can host the pilot without physical hardware. A proxy handles file bytes, so its hosting falls inside the PHI boundary and its outbound transfer charges matter. Approved provider-branded endpoints may reduce proxy costs but are not configured here.
 - Domain registration/DNS ownership has not been verified by this application. Intended domain: portal.streamlinedvault.com.

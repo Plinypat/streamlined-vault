@@ -9,7 +9,7 @@ An MSP-managed, branded file portal with a 4 TB allowance per practice, backed b
 1. **Foundation**: repository already connected. Business confirms domain ownership and DNS. Keep production secrets out of Git and use synthetic data in all previews.
 2. **Uploader pilot (current implementation stage)**: one-time expiring enrollment; upload-only device credential; interval or selected-day local-time schedule; per-device pause/revoke; status and run history in dashboard; resumable transfer; no duplicate concurrent runs. The MSP installs an inspectable Windows Task Scheduler background agent on a synthetic-data test machine. Pass isolation, enrollment replay, revocation, retry and schedule tests. An executable installer with signing is a subsequent release task; a PowerShell pilot installer is not a signed commercial installer.
 3. **Neon**: configure a project with the appropriate HIPAA settings and BAA before PHI. Migrate SQLite metadata, sessions, upload reservations, device policies and audit records into Postgres; add migrations, transactional quota checks, pooled connections, restricted roles, backups/restore tests and tenant isolation tests. Keep the local SQLite adapter for offline development. No live connection string is available yet.
-4. **Cognito**: configure managed enrollment, mandatory MFA, verified email and recovery. Adapt identity verification to documented Cognito behavior, including first-login MFA completion, rather than assuming an `amr` claim. Verify that pending enrollment, unassigned and revoked identities cannot access files. No live user pool is configured yet.
+4. **Clerk**: development application linked; mandatory authenticator MFA, backup codes and session limits configured. Backend token/session/MFA verification implemented with synthetic tests. Complete browser enrollment, recovery and revocation acceptance tests on the hosted backend before production.
 5. **Live B2 and hosting**: configure least-privilege server secrets, private storage, approved production hosting, TLS and branded domain. Request white-label custom endpoint/partner access and the MSP/subcontractor BAA arrangement. Measure proxy bandwidth before choosing a transfer design. Do not send large upload requests through Vercel Functions unchanged. Validate transfer checksums, restart recovery, retention and metadata/object restoration using synthetic data.
 6. **Pilot release**: one consenting practice, synthetic first; code-sign packaged agent and establish a signed-release/manual update process before broad rollout. Test device loss, token expiration, Windows reboot, locked files, DST, internet outages, quota exhaustion, database recovery and credential revocation. Define support ownership, failure alerts, audit archival, incident response and applicable BAAs before any patient files are accepted.
 
@@ -32,7 +32,7 @@ Use a small rented cloud instance for a bounded pilot, a separate managed identi
 
 - Confirm domain registration/DNS access.
 - Neon project and billing/HIPAA configuration; secure server-side connection string.
-- AWS account, selected region and approved hosting budget; Cognito user pool and verified sender.
+- AWS account, selected region and approved hosting budget; Clerk production application, verified sender and appropriate BAA.
 - Restricted B2 key/bucket and contractual review; provider custom-domain eligibility.
 - Code-signing certificate or signing service, release distribution endpoint and a designated pilot Windows machine.
 

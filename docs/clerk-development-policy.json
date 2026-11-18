@@ -1,0 +1,12 @@
+{
+  "auth_multi_factor": {
+    "authenticator_app": {"enabled": true},
+    "backup_code": {"enabled": true},
+    "required_for_sign_in": true,
+    "required_for_sign_up": true
+  },
+  "session_settings": {
+    "inactivity_timeout": {"enabled": true, "duration_seconds": 900},
+    "maximum_lifetime": {"enabled": true, "duration_seconds": 28800}
+  }
+}

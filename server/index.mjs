@@ -5,20 +5,21 @@ import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { resolve, join, extname } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { CloudStorage, LocalStorage } from './storage.mjs';
 import { createDevices } from './devices.mjs';
+import { createClerkAuth, contentSecurityPolicy } from './clerk-auth.mjs';
 
 const env=process.env, demo=env.DEMO_MODE==='true', production=env.NODE_ENV==='production';
+env.CLERK_PUBLISHABLE_KEY ||= env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
 if(demo&&production)throw Error('Demo mode is prohibited in production');
 const origin=env.APP_ORIGIN||'http://127.0.0.1:4173', data=resolve(env.DATA_DIRECTORY||'data');
-if(!demo){for(const k of ['OIDC_ISSUER','OIDC_CLIENT_ID','MSP_ADMINS','STORAGE_ENDPOINT','STORAGE_REGION','STORAGE_BUCKET','STORAGE_KEY_ID','STORAGE_APPLICATION_KEY'])if(!env[k])throw Error(`Missing server configuration: ${k}`);if(!origin.startsWith('https://'))throw Error('Live mode requires HTTPS');}
+if(!demo){for(const k of ['CLERK_PUBLISHABLE_KEY','CLERK_SECRET_KEY','MSP_ADMINS','STORAGE_ENDPOINT','STORAGE_REGION','STORAGE_BUCKET','STORAGE_KEY_ID','STORAGE_APPLICATION_KEY'])if(!env[k])throw Error(`Missing server configuration: ${k}`);if(!origin.startsWith('https://'))throw Error('Live mode requires HTTPS');}
 mkdirSync(data,{recursive:true});
 const db=new DatabaseSync(join(data,'portal.sqlite'));db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS tenants(id TEXT PRIMARY KEY,name TEXT NOT NULL,quota INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'active');
 CREATE TABLE IF NOT EXISTS members(tenant TEXT NOT NULL,email TEXT NOT NULL,role TEXT NOT NULL,PRIMARY KEY(tenant,email));
 CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY,user TEXT NOT NULL,expires INTEGER NOT NULL,csrf TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS oidc_states(hash TEXT PRIMARY KEY,verifier TEXT,nonce TEXT,expires INTEGER);
+CREATE TABLE IF NOT EXISTS clerk_identities(clerk_id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,name TEXT NOT NULL,folder TEXT NOT NULL,size INTEGER NOT NULL,key TEXT NOT NULL,version TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,upload TEXT,created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS parts(file TEXT NOT NULL,number INTEGER NOT NULL,etag TEXT NOT NULL,size INTEGER NOT NULL,PRIMARY KEY(file,number));
 CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,actor TEXT NOT NULL,action TEXT NOT NULL,resource TEXT NOT NULL,created TEXT NOT NULL,previous TEXT NOT NULL,digest TEXT NOT NULL);
@@ -32,7 +33,7 @@ const q=(sql,...args)=>db.prepare(sql).all(...args), one=(sql,...args)=>db.prepa
 const hash=v=>createHash('sha256').update(v).digest('hex'), now=()=>new Date().toISOString(), id=()=>randomUUID();
 const msp=new Set((env.MSP_ADMINS||'admin@example.test').split(',').map(v=>v.trim().toLowerCase()));
 const storage=demo?new LocalStorage(join(data,'objects')):new CloudStorage(env);
-const ready=demo||(env.PROVIDER_BAA_CONFIRMED==='true'&&env.HOSTING_APPROVED_FOR_PHI==='true');
+const ready=demo||(env.PROVIDER_BAA_CONFIRMED==='true'&&env.HOSTING_APPROVED_FOR_PHI==='true'&&env.CLERK_BAA_CONFIRMED==='true');
 const PART=16*1024*1024, MAX=PART*10000;
 function audit(tenant,actor,action,resource=''){const previous=one('SELECT digest FROM audit ORDER BY rowid DESC LIMIT 1')?.digest||'';const a={id:id(),tenant,actor,action,resource,created:now(),previous};const digest=hash(JSON.stringify(a));run('INSERT INTO audit VALUES(?,?,?,?,?,?,?,?)',a.id,tenant,actor,action,resource,a.created,previous,digest);}
 function publicFile(f){return {id:f.id,name:f.name,folder:f.folder,size:f.size,status:f.status,created:f.created};}
@@ -42,36 +43,31 @@ function send(res,status,value){if(res.headersSent)return;res.writeHead(status,{
 async function body(req,limit=65536,raw=false){let size=0,parts=[];for await(const b of req){size+=b.length;if(size>limit)throw error(413,'Request is too large');parts.push(b);}const b=Buffer.concat(parts);if(raw)return b;try{return JSON.parse(b.toString()||'{}')}catch{throw error(400,'Invalid JSON')}}
 function session(req){const token=/\bss_session=([^;]+)/.exec(req.headers.cookie||'')?.[1];if(!token)return null;const s=one('SELECT * FROM sessions WHERE hash=? AND expires>?',hash(token),Date.now());return s?{...JSON.parse(s.user),csrf:s.csrf,sessionHash:s.hash}:null;}
 function login(res,user){const token=randomBytes(32).toString('base64url'),csrf=randomBytes(24).toString('base64url');run('INSERT INTO sessions VALUES(?,?,?,?)',hash(token),JSON.stringify(user),Date.now()+15*60*1000,csrf);res.setHeader('Set-Cookie',`ss_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=900${demo?'':'; Secure'}`);return {...user,csrf};}
-function authenticate(req){const auth=req.headers.authorization;if(auth?.startsWith('Bearer ')){const t=one('SELECT * FROM tokens WHERE hash=? AND revoked=0 AND expires>?',hash(auth.slice(7)),Date.now());need(t,401,'Uploader credential invalid or expired');run('UPDATE tokens SET last=? WHERE id=?',now(),t.id);const device=one('SELECT id FROM devices WHERE token=? AND revoked=0',t.id);return {email:`agent:${t.id}`,agent:true,tenant:t.tenant,scope:t.scope,tokenId:t.id,device:device?.id};}const user=session(req);need(user,401,'Please sign in');if(!['GET','HEAD'].includes(req.method)){need(req.headers['x-csrf-token']===user.csrf,403,'Session verification failed');need(req.headers.origin===origin,403,'Request origin not allowed');}return user;}
+async function authenticate(req){const auth=req.headers.authorization;if(auth?.startsWith('Bearer ss_')||auth?.startsWith('Bearer sv_device_')){const t=one('SELECT * FROM tokens WHERE hash=? AND revoked=0 AND expires>?',hash(auth.slice(7)),Date.now());need(t,401,'Uploader credential invalid or expired');run('UPDATE tokens SET last=? WHERE id=?',now(),t.id);const device=one('SELECT id FROM devices WHERE token=? AND revoked=0',t.id);return {email:`agent:${t.id}`,agent:true,tenant:t.tenant,scope:t.scope,tokenId:t.id,device:device?.id};}
+const cookie=session(req);let user;if(demo){need(cookie,401,'Please sign in');user=cookie;}else{user=await clerkAuth.authenticate(req);need(cookie&&cookie.clerkId===user.clerkId&&cookie.clerkSessionId===user.clerkSessionId,401,'Please refresh your sign-in');user={...user,csrf:cookie.csrf,sessionHash:cookie.sessionHash};}if(!['GET','HEAD'].includes(req.method)){need(req.headers['x-csrf-token']===user.csrf,403,'Session verification failed');need(req.headers.origin===origin,403,'Request origin not allowed');}return user;}
 function tenantAccess(user,tenant,write=false,admin=false){const t=one('SELECT * FROM tenants WHERE id=?',tenant);need(t,404,'Workspace not found');let role=user.agent?(user.tenant===tenant?(user.scope==='upload'?'uploader':'viewer'):null):user.msp?'admin':one('SELECT role FROM members WHERE tenant=? AND email=?',tenant,user.email)?.role;need(role);need(t.status==='active'||user.msp,423,'Workspace is suspended');if(write){need(['admin','editor','uploader'].includes(role));if(user.device)need(!one('SELECT paused FROM devices WHERE id=?',user.device)?.paused,423,'Uploader is paused');}if(admin)need(role==='admin'&&!user.agent);return {...t,role};}
 function accessible(user){return user.msp?q('SELECT * FROM tenants'):q('SELECT t.* FROM tenants t JOIN members m ON m.tenant=t.id WHERE m.email=?',user.email);}
 function usage(tenant){return Number(one("SELECT COALESCE(SUM(size),0) total FROM files WHERE tenant=? AND status IN ('ready','uploading','finishing','trash')",tenant).total);}
-let oidc;
-async function discovery(){if(!oidc){const r=await fetch(env.OIDC_ISSUER.replace(/\/$/,'')+'/.well-known/openid-configuration');need(r.ok,503,'Identity service unavailable');oidc=await r.json();need(oidc.issuer===env.OIDC_ISSUER,503,'Identity issuer mismatch');}return oidc;}
+const clerkAuth=demo?null:createClerkAuth({env,origin,resolveIdentity:({clerkId,email})=>{const identity=one('SELECT * FROM clerk_identities WHERE clerk_id=? OR email=?',clerkId,email);need(!identity||(identity.clerk_id===clerkId&&identity.email===email),403,'Account binding changed; contact your administrator');need(msp.has(email)||one('SELECT email FROM members WHERE email=?',email),403,'Ask your administrator for practice access');if(!identity)run('INSERT INTO clerk_identities VALUES(?,?)',clerkId,email);return {msp:msp.has(email)};}});
 if(demo&&!one('SELECT id FROM tenants LIMIT 1')){for(const [n,i] of [['Northside Medical','northside'],['Oak Valley Dental','oakvalley'],['Lakeside Imaging','lakeside']]){run('INSERT INTO tenants VALUES(?,?,?,?)',i,n,4_000_000_000_000,'active');run('INSERT INTO members VALUES(?,?,?)',i,'client@example.test','admin');audit(i,'system','Workspace created');} }
 const devices=createDevices({db,one,q,run,audit,need,body,send,tenantAccess,now});
 
 const limits=new Map();
 const server=http.createServer(async(req,res)=>{
-  res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Frame-Options','DENY');res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");if(!demo)res.setHeader('Strict-Transport-Security','max-age=31536000; includeSubDomains');
+  res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Frame-Options','DENY');res.setHeader('Content-Security-Policy',contentSecurityPolicy(clerkAuth?.config.frontendApi));if(!demo)res.setHeader('Strict-Transport-Security','max-age=31536000; includeSubDomains');
   try{
     const url=new URL(req.url,origin),path=url.pathname,method=req.method;
     const ip=req.socket.remoteAddress;const l=limits.get(ip)||{n:0,until:Date.now()+60000};if(l.until<Date.now()){l.n=0;l.until=Date.now()+60000;}l.n++;limits.set(ip,l);need(l.n<1800,429,'Too many requests; retry shortly');
-    if(path==='/api/config')return send(res,200,{demo,ready,brand:'Streamlined Vault',partSize:PART,auth:'/auth/login'});
+    if(path==='/api/config')return send(res,200,{demo,ready,brand:'Streamlined Vault',partSize:PART,auth:demo?'demo':'clerk',...(clerkAuth?{clerk:{publishableKey:clerkAuth.config.publishableKey,frontendApi:clerkAuth.config.frontendApi}}:{})});
     if(path==='/health')return send(res,200,{ok:true});
     if(path==='/api/device-enroll'&&method==='POST')return await devices.enroll(req,res);
     if(path==='/auth/demo'&&method==='POST'){need(demo,404);need(req.headers.origin===origin);const b=await body(req);return send(res,200,login(res,{email:b.role==='msp'?'admin@example.test':'client@example.test',name:b.role==='msp'?'MSP Administrator':'Practice Administrator',msp:b.role==='msp'}));}
-    if(path==='/auth/login'){
-      need(!demo,400,'Use demo sign in');const d=await discovery(),state=randomBytes(32).toString('base64url'),verifier=randomBytes(32).toString('base64url'),nonce=randomBytes(24).toString('base64url');run('INSERT INTO oidc_states VALUES(?,?,?,?)',hash(state),verifier,nonce,Date.now()+600000);res.setHeader('Set-Cookie',`ss_login=${state}; Secure; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600`);const u=new URL(d.authorization_endpoint);Object.entries({client_id:env.OIDC_CLIENT_ID,response_type:'code',scope:'openid email profile',redirect_uri:origin+'/auth/callback',state,nonce,code_challenge:hashBase64(verifier),code_challenge_method:'S256',max_age:'0'}).forEach(([k,v])=>u.searchParams.set(k,v));res.writeHead(302,{Location:u.href});return res.end();
-    }
-    if(path==='/auth/callback'){
-      need(!demo,404);const state=url.searchParams.get('state')||'',cookie=/\bss_login=([^;]+)/.exec(req.headers.cookie||'')?.[1];need(cookie&&cookie===state,401,'Sign-in state mismatch');const saved=one('SELECT * FROM oidc_states WHERE hash=? AND expires>?',hash(state),Date.now());need(saved,401,'Sign-in expired');run('DELETE FROM oidc_states WHERE hash=?',hash(state));const d=await discovery();const token=await fetch(d.token_endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'authorization_code',code:url.searchParams.get('code')||'',redirect_uri:origin+'/auth/callback',client_id:env.OIDC_CLIENT_ID,code_verifier:saved.verifier,...(env.OIDC_CLIENT_SECRET?{client_secret:env.OIDC_CLIENT_SECRET}:{})})});need(token.ok,401,'Sign-in failed');const tokens=await token.json();const {payload:p}=await jwtVerify(tokens.id_token,createRemoteJWKSet(new URL(d.jwks_uri)),{issuer:env.OIDC_ISSUER,audience:env.OIDC_CLIENT_ID,algorithms:['RS256','ES256'],maxTokenAge:'10m'});need(p.nonce===saved.nonce&&p.email_verified===true,401,'Verified identity required');need(Array.isArray(p.amr)&&p.amr.some(x=>(env.OIDC_MFA_AMR||'mfa otp').split(' ').includes(x)),401,'MFA assurance was not supplied by the identity provider');const email=String(p.email).toLowerCase();need(msp.has(email)||one('SELECT email FROM members WHERE email=?',email),403,'Ask your administrator for a workspace invitation');login(res,{email,name:p.name||email,msp:msp.has(email)});res.writeHead(302,{Location:'/'});return res.end();
-    }
+    if(path==='/auth/complete'&&method==='POST'){need(!demo,404);need(req.headers.origin===origin,403,'Request origin not allowed');const identity=await clerkAuth.authenticate(req);return send(res,200,login(res,identity));}
     if(path.startsWith('/api/')){
-      const user=authenticate(req);
+      const user=await authenticate(req);
       if(path.startsWith('/api/device/'))return await devices.agent(req,res,user,path.slice('/api/device'.length));
       if(path==='/api/me')return send(res,200,{...user,tenants:accessible(user).map(t=>({...t,used:usage(t.id),role:user.msp?'admin':one('SELECT role FROM members WHERE tenant=? AND email=?',t.id,user.email)?.role}))});
-      if(path==='/api/logout'&&method==='POST'){run('DELETE FROM sessions WHERE hash=?',user.sessionHash||'');res.setHeader('Set-Cookie',`ss_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${demo?'':'; Secure'}`);return send(res,200,{ok:true});}
+      if(path==='/api/logout'&&method==='POST'){if(!demo)await clerkAuth.revoke(user.clerkSessionId);run('DELETE FROM sessions WHERE hash=?',user.sessionHash||'');res.setHeader('Set-Cookie',`ss_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${demo?'':'; Secure'}`);return send(res,200,{ok:true});}
       if(path==='/api/tenants'&&method==='POST'){need(user.msp);const b=await body(req);need(typeof b.name==='string'&&b.name.trim().length>1&&b.name.length<=100,400,'Practice name is required');const tenant=id();run('INSERT INTO tenants VALUES(?,?,?,?)',tenant,b.name.trim(),4_000_000_000_000,'active');audit(tenant,user.email,'Workspace created');return send(res,201,{id:tenant});}
       const route=/^\/api\/tenants\/([^/]+)(.*)$/.exec(path);need(route,404,'Not found');const tenant=route[1],tail=route[2];const t=tenantAccess(user,tenant);
       if(tail==='/devices'||tail.startsWith('/devices/'))return await devices.portal(req,res,user,tenant,tail);
@@ -111,11 +107,10 @@ const server=http.createServer(async(req,res)=>{
       }
       throw error(404,'Not found');
     }
-    need(method==='GET'||method==='HEAD',405);const file=path==='/'?'index.html':path.slice(1);need(['index.html','app.js','style.css','demo.js'].includes(file),404,'Not found');const contents=readFileSync(resolve('dist',file));res.writeHead(200,{'Content-Type':({'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8'})[extname(file)]});res.end(contents);
-  }catch(e){if(res.headersSent){res.destroy();return;}const status=e.status||500;if(status>=500)console.error(JSON.stringify({event:'request_failed',code:e.name||'Error',at:now()}));send(res,status,{error:status>=500?'Service temporarily unavailable. Contact your storage administrator.':e.message});}
+    need(method==='GET'||method==='HEAD',405);const file=path==='/'?'index.html':path.slice(1);need(['index.html','app.js','style.css','demo.js','clerk-client.js'].includes(file),404,'Not found');const contents=readFileSync(resolve('dist',file));res.writeHead(200,{'Content-Type':({'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8'})[extname(file)]});res.end(contents);
+  }catch(e){if(res.headersSent){res.destroy();return;}const status=e.status||500;if(status>=500)console.error(JSON.stringify({event:'request_failed',code:e.name||'Error',at:now()}));send(res,status,{error:status>=500?'Service temporarily unavailable. Contact your storage administrator.':e.message,...(e.code?{code:e.code}:{})});}
 });
-function hashBase64(value){return createHash('sha256').update(value).digest('base64url');}
-const timer=setInterval(()=>{run('DELETE FROM sessions WHERE expires<?',Date.now());run('DELETE FROM oidc_states WHERE expires<?',Date.now());for(const [key,l] of limits)if(l.until<Date.now())limits.delete(key);},30000);timer.unref();
+const timer=setInterval(()=>{run('DELETE FROM sessions WHERE expires<?',Date.now());for(const [key,l] of limits)if(l.until<Date.now())limits.delete(key);},30000);timer.unref();
 server.requestTimeout=15*60*1000;server.headersTimeout=60000;
 server.listen(Number(env.PORT)||4173,demo?'127.0.0.1':env.HOST||'127.0.0.1',()=>console.log(`Streamlined Vault ${demo?'LOCAL TEST MODE':'server'}: ${origin}`));
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{clearInterval(timer);server.close(()=>{db.close();process.exit(0);});});
