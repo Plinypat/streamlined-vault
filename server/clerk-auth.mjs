@@ -3,14 +3,19 @@ import { createClerkClient } from '@clerk/backend';
 const fail=(status,message,code)=>Object.assign(Error(message),{status,code});
 
 export function clerkConfiguration(env) {
-  const key=env.CLERK_PUBLISHABLE_KEY||env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY||'';
+  const key=(env.CLERK_PUBLISHABLE_KEY||env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY||'').trim();
   if(!/^pk_(test|live)_[A-Za-z0-9+/=_-]+$/.test(key))throw Error('Configure CLERK_PUBLISHABLE_KEY on the server');
   const decoded=Buffer.from(key.replace(/^pk_(test|live)_/,''),'base64').toString('utf8');
   if(!decoded.endsWith('$'))throw Error('Invalid Clerk publishable key');
   const host=decoded.slice(0,-1);
   if(!/^(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(host)||!host.includes('.')||host.includes('..'))throw Error('Invalid Clerk Frontend API host');
-  if(!env.CLERK_SECRET_KEY)throw Error('Configure CLERK_SECRET_KEY only on the server');
-  if(env.NODE_ENV==='production'&&(!key.startsWith('pk_live_')||!env.CLERK_SECRET_KEY.startsWith('sk_live_')))throw Error('Production requires Clerk live instance keys');
+  const secret=(env.CLERK_SECRET_KEY||'').trim();
+  if(!secret)throw Error('Configure CLERK_SECRET_KEY only on the server');
+  if(env.NODE_ENV==='production'){
+    if(!key.startsWith('pk_live_'))throw Error('CLERK_PUBLISHABLE_KEY is not a live production key; copy the pk_live_ value from Clerk Production API Keys');
+    if(!secret.startsWith('sk_live_'))throw Error('CLERK_SECRET_KEY is not a live production secret; copy the sk_live_ value from Clerk Production API Keys without quotes or a variable-name prefix');
+  }
+  if(!/^sk_(test|live)_[A-Za-z0-9_-]+$/.test(secret))throw Error('CLERK_SECRET_KEY has invalid formatting; enter only the secret value without quotes or a variable-name prefix');
   const maxAge=Number(env.CLERK_MFA_MAX_AGE_MINUTES||15);
   if(!Number.isInteger(maxAge)||maxAge<5||maxAge>60)throw Error('CLERK_MFA_MAX_AGE_MINUTES must be between 5 and 60');
   return {publishableKey:key,frontendApi:'https://'+host,issuer:'https://'+host,maxAge};
@@ -19,7 +24,7 @@ export function clerkConfiguration(env) {
 // Verified Clerk subject -> application-owned membership. Clerk user metadata is not authorization.
 export function createClerkAuth({env,origin,resolveIdentity,client}) {
   const config=clerkConfiguration(env);
-  const sdk=client||createClerkClient({publishableKey:config.publishableKey,secretKey:env.CLERK_SECRET_KEY,telemetry:{disabled:true}});
+  const sdk=client||createClerkClient({publishableKey:config.publishableKey,secretKey:env.CLERK_SECRET_KEY.trim(),telemetry:{disabled:true}});
   async function authenticate(req) {
     const headers=new Headers();for(const [k,v] of Object.entries(req.headers||{}))if(v!==undefined)headers.set(k,Array.isArray(v)?v.join(','):v);
     let state;

@@ -42,3 +42,13 @@ test('Clerk configuration does not expose secret keys and pins CSP to configured
  const csp=contentSecurityPolicy(c.frontendApi);assert.ok(csp.includes(issuer));assert.ok(!csp.includes('unsafe-eval'));assert.ok(!csp.includes('script-src https:'));
  assert.throws(()=>clerkConfiguration({...env,NODE_ENV:'production'}),/live/);
 });
+
+test('production key diagnostics identify the setting without revealing credentials',()=>{
+ const live={...env,NODE_ENV:'production',CLERK_PUBLISHABLE_KEY:'pk_live_'+Buffer.from('clerk.example.test$').toString('base64'),CLERK_SECRET_KEY:'sk_live_synthetic_not_a_real_key'};
+ assert.equal(clerkConfiguration(live).frontendApi,'https://clerk.example.test');
+ for(const name of ['CLERK_PUBLISHABLE_KEY','CLERK_SECRET_KEY']){
+  assert.throws(()=>clerkConfiguration({...live,[name]:env[name]}),error=>error.message.includes(name)&&!error.message.includes(env[name]));
+ }
+ assert.deepEqual(clerkConfiguration({...live,CLERK_PUBLISHABLE_KEY:' \n'+live.CLERK_PUBLISHABLE_KEY+'\n',CLERK_SECRET_KEY:' '+live.CLERK_SECRET_KEY+'\n'}),clerkConfiguration(live));
+ assert.throws(()=>clerkConfiguration({...live,CLERK_SECRET_KEY:'"'+live.CLERK_SECRET_KEY+'"'}),/CLERK_SECRET_KEY/);
+});
