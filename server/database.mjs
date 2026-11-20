@@ -26,6 +26,11 @@ const tables = [
   "transfer_events",
   "provider_inventory",
   "upload_part_grants",
+  "security_events",
+  "security_state",
+  "security_alerts",
+  "security_checks",
+  "audit_archives",
 ];
 export function postgresSql(sql) {
   let n = 0;
@@ -172,6 +177,7 @@ const migrations = [
   { version: 1, file: "001-metadata.sql" },
   { version: 2, file: "002-msp-console.sql" },
   { version: 3, file: "003-direct-transfers.sql" },
+  { version: 4, file: "004-security.sql" },
 ];
 export async function migratePostgres(db) {
   try {
@@ -251,6 +257,23 @@ export async function openDatabase({ env, demo, data }) {
         "utf8",
       ).replaceAll("streamlined_vault.", ""),
     );
+    const securitySql = readFileSync(
+      new URL("./migrations/004-security.sql", import.meta.url),
+      "utf8",
+    )
+      .split("CREATE OR REPLACE FUNCTION")[0]
+      .replaceAll("streamlined_vault.", "")
+      .replaceAll("seq BIGSERIAL UNIQUE NOT NULL", "seq INTEGER");
+    await db.exec(
+      securitySql
+        .replaceAll("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
+        .replaceAll("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS "),
+    );
+    for (const table of ["audit", "security_events", "audit_archives"])
+      for (const operation of ["UPDATE", "DELETE"])
+        await db.exec(
+          `CREATE TRIGGER IF NOT EXISTS ${table}_no_${operation.toLowerCase()} BEFORE ${operation} ON ${table} BEGIN SELECT RAISE(ABORT,'Security logs are append only'); END;`,
+        );
   }
   return db;
 }

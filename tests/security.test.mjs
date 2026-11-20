@@ -134,7 +134,7 @@ before(async () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
         ).version,
-        3,
+        4,
       );
       await migratePostgres(upgrade); // Repeat cold starts must leave data intact.
       await upgrade.run("DELETE FROM tenants WHERE id='upgrade-fixture'");
@@ -1338,5 +1338,90 @@ test("direct transfer routes enforce identity, tenant access and CSRF", async ()
       ).status,
       403,
     );
+  }
+});
+
+test("MSP security operations are isolated, denial logs are durable and maintenance is authenticated", async () => {
+  assert.equal((await request("/api/msp/security")).status, 401);
+  assert.equal(
+    (await request("/api/msp/security", "GET", undefined, client)).status,
+    403,
+  );
+  assert.equal((await request("/internal/security-maintenance")).status, 401);
+  const status = await request("/api/msp/security", "GET", undefined, admin);
+  assert.equal(status.status, 200);
+  assert.equal(status.value.technicalApproval, false);
+  assert.ok(
+    status.value.events.some(
+      (e) => e.event === "authentication_failed" && e.status === 401,
+    ),
+  );
+  assert.ok(status.headers.get("x-request-id"));
+  assert.ok(!JSON.stringify(status.value).includes("STORAGE_APPLICATION_KEY"));
+  const job = await request("/api/msp/security/maintenance", "POST", {}, admin);
+  assert.equal(job.status, 200);
+  assert.equal(job.value.verified.ok, true);
+  assert.equal(job.value.synthetic, true);
+  const canary = await request(
+    "/api/msp/security/storage-check",
+    "POST",
+    { tenant: "northside" },
+    admin,
+  );
+  assert.equal(canary.status, 200);
+  assert.equal(canary.value.result.checksumVerified, true);
+  assert.equal(canary.value.result.synthetic, true);
+  if (testPostgres) {
+    const pool = new pg.Pool({ connectionString: testPostgres, ssl: false });
+    try {
+      for (const table of ["audit", "security_events", "audit_archives"]) {
+        await assert.rejects(
+          () => pool.query("DELETE FROM streamlined_vault." + table),
+          (e) => e.code === "42501",
+        );
+        await assert.rejects(
+          () => pool.query("TRUNCATE streamlined_vault." + table),
+          (e) => e.code === "42501",
+        );
+      }
+      const connection = await pool.connect();
+      try {
+        const role = "sv_test_log_reader_" + Date.now();
+        await connection.query("BEGIN");
+        await connection.query("CREATE ROLE " + role + " NOLOGIN");
+        await connection.query(
+          "GRANT USAGE ON SCHEMA streamlined_vault TO " + role,
+        );
+        await connection.query(
+          "GRANT SELECT,INSERT ON streamlined_vault.audit,streamlined_vault.security_events,streamlined_vault.audit_archives TO " +
+            role,
+        );
+        await connection.query("SET LOCAL ROLE " + role);
+        assert.ok(
+          (
+            await connection.query(
+              "SELECT COUNT(*) FROM streamlined_vault.audit",
+            )
+          ).rows.length,
+        );
+        for (const operation of [
+          "DELETE FROM streamlined_vault.audit",
+          "TRUNCATE streamlined_vault.audit",
+          "DROP TRIGGER audit_append_only ON streamlined_vault.audit",
+        ]) {
+          await connection.query("SAVEPOINT denied_mutation");
+          await assert.rejects(
+            () => connection.query(operation),
+            (e) => e.code === "42501",
+          );
+          await connection.query("ROLLBACK TO SAVEPOINT denied_mutation");
+        }
+      } finally {
+        await connection.query("ROLLBACK");
+        connection.release();
+      }
+    } finally {
+      await pool.end();
+    }
   }
 });

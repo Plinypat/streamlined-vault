@@ -210,9 +210,13 @@ function shell() {
       !(t?.kind === "internal" && p === "Team & access"),
   );
   if (user.msp)
-    nav.push(["Client workspaces", "building"], ["MSP settings", "gear"]);
+    nav.push(
+      ["Client workspaces", "building"],
+      ["MSP settings", "gear"],
+      ["Security & logs", "shield"],
+    );
   $("#root").innerHTML =
-    `<aside class="sidebar">${brand()}<div class="workspace"><label>${user.msp ? "SELECTED WORKSPACE" : "YOUR PRACTICE"}</label><select id="workspace" aria-label="Select practice">${user.tenants.map((t) => `<option value="${t.id}" ${tenant === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div><div class="navlabel">WORKSPACE</div><nav>${nav.map(([p, i]) => `<button title="${p}" data-page="${p}" class="${page === p ? "active" : ""}">${icon(i)}<span class="navtext">${p === "Settings" ? "Workspace settings" : p}</span>${p === "Transfers" && transfers.some((t) => t.status === "Uploading") ? '<span class="navcount">●</span>' : ""}</button>`).join("")}</nav><div class="sidebarbottom"><h3 style="font-size:11px">Selected workspace storage</h3><div class="storagebar"><i style="width:${Math.min(100, (used / 4e12) * 100)}%"></i></div><div class="storagetext"><span>${bytes(used)} used</span><span>4 TB plan</span></div><div class="support">${icon("help")}<button class="quiet" data-action="help" style="font-size:11px">Need a hand?</button></div></div></aside><div class="main"><header><div class="breadcrumb">${page === "MSP settings" || (page === "Overview" && user.msp && overviewScope === "all") ? "MSP console" : "Workspace"}　/　<b>${esc(page === "Settings" ? "Workspace settings" : page)}</b></div><div class="headeractions"><span class="badge ${config.demo ? "amber" : ""}">${config.demo ? "PREVIEW · NO PHI" : icon("shield") + "PRIVATE WORKSPACE"}</span><button class="quiet" title="Notifications" data-action="notices">${icon("bell")}</button><span class="avatar">${user.msp ? "MS" : "PA"}</span><button class="quiet" title="Sign out" data-action="logout">${icon("logout")}</button></div></header><div class="content"><div class="titlebar"><div><span class="eyebrow">${user.msp ? "MANAGED WITH CARE" : "YOUR FILES, BEAUTIFULLY ORGANIZED"}</span><h1 id="heading"></h1><p id="subtitle"></p></div><div class="actions" id="pageactions"></div></div>${config.demo ? `<div class="notice">${icon("shield")}Preview workspace. All examples are synthetic. Cloud storage and identity are not connected.</div>` : !config.ready ? '<div class="notice">Storage activation is pending your administrator’s production review.</div>' : ""}<div id="pagebody"><div class="empty">Opening workspace…</div></div><footer class="footer"><span>Streamlined Vault　·　${esc(page === "MSP settings" || (page === "Overview" && user.msp && overviewScope === "all") ? "MSP console" : t?.name || "MSP console")}</span><span>${preview ? "Browser preview · resets on refresh" : config.demo ? "Local test environment" : "Managed client storage"}</span></footer></div></div>`;
+    `<aside class="sidebar">${brand()}<div class="workspace"><label>${user.msp ? "SELECTED WORKSPACE" : "YOUR PRACTICE"}</label><select id="workspace" aria-label="Select practice">${user.tenants.map((t) => `<option value="${t.id}" ${tenant === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div><div class="navlabel">WORKSPACE</div><nav>${nav.map(([p, i]) => `<button title="${p}" data-page="${p}" class="${page === p ? "active" : ""}">${icon(i)}<span class="navtext">${p === "Settings" ? "Workspace settings" : p}</span>${p === "Transfers" && transfers.some((t) => t.status === "Uploading") ? '<span class="navcount">●</span>' : ""}</button>`).join("")}</nav><div class="sidebarbottom"><h3 style="font-size:11px">Selected workspace storage</h3><div class="storagebar"><i style="width:${Math.min(100, (used / 4e12) * 100)}%"></i></div><div class="storagetext"><span>${bytes(used)} used</span><span>4 TB plan</span></div><div class="support">${icon("help")}<button class="quiet" data-action="help" style="font-size:11px">Need a hand?</button></div></div></aside><div class="main"><header><div class="breadcrumb">${["MSP settings", "Security & logs"].includes(page) || (page === "Overview" && user.msp && overviewScope === "all") ? "MSP console" : "Workspace"}　/　<b>${esc(page === "Settings" ? "Workspace settings" : page)}</b></div><div class="headeractions"><span class="badge ${config.demo ? "amber" : ""}">${config.demo ? "PREVIEW · NO PHI" : icon("shield") + "PRIVATE WORKSPACE"}</span><button class="quiet" title="Notifications" data-action="notices">${icon("bell")}</button><span class="avatar">${user.msp ? "MS" : "PA"}</span><button class="quiet" title="Sign out" data-action="logout">${icon("logout")}</button></div></header><div class="content"><div class="titlebar"><div><span class="eyebrow">${user.msp ? "MANAGED WITH CARE" : "YOUR FILES, BEAUTIFULLY ORGANIZED"}</span><h1 id="heading"></h1><p id="subtitle"></p></div><div class="actions" id="pageactions"></div></div>${config.demo ? `<div class="notice">${icon("shield")}Preview workspace. All examples are synthetic. Cloud storage and identity are not connected.</div>` : !config.ready ? '<div class="notice">Storage activation is pending your administrator’s production review.</div>' : ""}<div id="pagebody"><div class="empty">Opening workspace…</div></div><footer class="footer"><span>Streamlined Vault　·　${esc(["MSP settings", "Security & logs"].includes(page) || (page === "Overview" && user.msp && overviewScope === "all") ? "MSP console" : t?.name || "MSP console")}</span><span>${preview ? "Browser preview · resets on refresh" : config.demo ? "Local test environment" : "Managed client storage"}</span></footer></div></div>`;
   $("#workspace").onchange = async (e) => {
     tenant = e.target.value;
     overviewScope = "workspace";
@@ -258,6 +262,10 @@ async function navigate(p) {
       "Your workspace, your way.",
       "Review storage, access, and service configuration.",
     ],
+    "Security & logs": [
+      "Security, with evidence.",
+      "Protected logs, maintenance health, alerts and live verification.",
+    ],
     "MSP settings": [
       "Your MSP. Your workspace.",
       "Account settings, private storage and the default client plan.",
@@ -292,6 +300,11 @@ async function navigate(p) {
     );
   }
   try {
+    if (p === "Security & logs") {
+      data.security = await api("/api/msp/security");
+      if (count === renderCounter) renderSecurity();
+      return;
+    }
     if (p === "MSP settings") {
       data.mspSettings = await api("/api/msp/settings");
       if (count === renderCounter) renderMspSettings();
@@ -453,6 +466,21 @@ function readPlanForm() {
     storageUpgradeCentsPerTB: number("#plan-storage-rate", 100),
     additionalServices: $("#plan-services").value.trim(),
   };
+}
+function renderSecurity() {
+  const s = data.security,
+    archive = s.archive,
+    last = s.maintenance.lastSuccess;
+  $("#pagebody").innerHTML =
+    `<div class="notice">${s.synthetic ? "Synthetic test environment. No production assurance is implied." : "Technical approval remains pending until all required live checks and recovery reviews are completed."}</div><div class="stats">${metric("Protected archive", archive.configured ? (archive.synthetic ? "Local test only" : "Configured") : "Needs setup", "365-day COMPLIANCE retention; verified per archived object")}${metric("Scheduled maintenance", s.maintenance.configured ? "Secret configured" : "Secret missing", last ? "Last completed " + date(last.at) : "No completed maintenance run")}${metric("Open alerts", String(s.alerts.filter((a) => a.status === "open").length), "Acknowledgment records a review; it does not fix the underlying problem")}${metric("Access review", s.accessReview ? date(s.accessReview.at) : "Not recorded", "Review accounts and practice roles monthly")}</div><div class="detailgrid"><div class="card section-panel"><div class="cardhead"><h2>Verification and maintenance</h2></div><div class="panel-content"><p>Archive queued logs, verify their chains and locked copies, and check database transport, uploader health and stalled transfers.</p><button class="primary" data-action="securitymaintenance">Run maintenance & archive</button><p>Run a synthetic 17 MiB upload/download/restore test in the selected workspace. Only the generated canary is cleaned up; client files are untouched.</p><button data-action="securitystorage" ${tenant ? "" : "disabled"}>Test selected workspace storage</button><p>Live archive setup uses the approved dedicated 365-day locked bucket. Missing credential permissions are reported, not bypassed.</p>${s.maintenance.lastFailure ? `<div class="notice">Last maintenance failure: ${esc(s.maintenance.lastFailure.message)} (${date(s.maintenance.lastFailure.at)})</div>` : ""}${s.maintenance.stale ? '<div class="notice">Maintenance evidence is missing or older than two hours. Automatic archival is not verified.</div>' : ""}</div></div><div class="card section-panel"><div class="cardhead"><h2>Access and recovery</h2></div><div class="panel-content"><button data-action="securityaccess">Review administrator and member access</button><p>Protected metadata backup and isolated restore tools are included in the operator package. Recovery key custody and independent recovery evidence must be reviewed separately.</p><ul>${s.remaining.map((v) => `<li>${esc(v)}</li>`).join("")}</ul><p>Alerts are retained in this dashboard. External notification delivery has not been configured.</p></div></div></div><div class="card section"><div class="cardhead"><h2>Security alerts</h2></div><div class="panel-content">${s.alerts.length ? s.alerts.map((a) => `<div class="row"><div><strong>${esc(a.code.replaceAll("_", " "))}</strong><p>${esc(a.severity)} · ${esc(a.status)} · ${a.occurrences} occurrence(s) · ${date(a.last_seen)}</p></div>${a.status === "open" ? `<button data-securityack="${a.id}">Acknowledge</button>` : ""}</div>`).join("") : "<p>No alerts recorded. This alone does not establish a completed security review.</p>"}</div></div><div class="card section"><div class="cardhead"><h2>Verification history</h2></div><div class="panel-content">${
+      s.checks
+        .slice(0, 20)
+        .map(
+          (c) =>
+            `<details><summary>${esc(c.kind)} · ${esc(c.status)} · ${date(c.created)}</summary><pre>${esc(JSON.stringify(c.result, null, 2))}</pre></details>`,
+        )
+        .join("") || "<p>No verification runs yet.</p>"
+    }</div></div><div class="card section"><div class="cardhead"><h2>Recent security events</h2><button data-action="securityexport">Export these events</button></div><div class="tablewrap"><table><thead><tr><th>Time</th><th>Event</th><th>Severity / status</th><th>Route</th><th>Request ID</th></tr></thead><tbody>${s.events.map((e) => `<tr><td>${date(e.created)}</td><td>${esc(e.event)}</td><td>${esc(e.severity)} / ${e.status}</td><td>${esc(e.method)} ${esc(e.route)}</td><td>${esc(e.request_id)}</td></tr>`).join("")}</tbody></table></div></div>`;
 }
 function renderMspSettings() {
   const m = data.mspSettings;
@@ -1101,6 +1129,50 @@ document.addEventListener("click", async (e) => {
         "Add files to folder",
       );
     if (d.action === "newclient") return workspaceDialog();
+    if (d.securityack) {
+      await api("/api/msp/security/acknowledge", "POST", { id: d.securityack });
+      return navigate("Security & logs");
+    }
+    if (d.action === "securitymaintenance" || d.action === "securitystorage") {
+      e.target.disabled = true;
+      toast("Running security verification…");
+      try {
+        await api(
+          "/api/msp/security/" +
+            (d.action === "securitymaintenance"
+              ? "maintenance"
+              : "storage-check"),
+          "POST",
+          d.action === "securitystorage" ? { tenant } : {},
+        );
+        toast("Verification finished; review the recorded results");
+      } finally {
+        await navigate("Security & logs");
+      }
+      return;
+    }
+    if (d.action === "securityaccess") {
+      const r = await api("/api/msp/security/access");
+      modal(
+        "Review privileged access",
+        `<p>MSP administrators: ${r.administrators.map(esc).join(", ")}</p><div class="tablewrap"><table><thead><tr><th>Workspace ID</th><th>Member</th><th>Role</th></tr></thead><tbody>${r.members.map((m) => `<tr><td>${esc(m.tenant)}</td><td>${esc(m.email)}</td><td>${esc(m.role)}</td></tr>`).join("")}</tbody></table></div><p>Confirm only after you have reviewed these accounts. This records the review and does not change permissions.</p>`,
+        async () => {
+          await api("/api/msp/security/access-review", "POST", {});
+          await navigate("Security & logs");
+        },
+        "Record completed review",
+      );
+      return;
+    }
+    if (d.action === "securityexport") {
+      saveBlob(
+        new Blob([JSON.stringify(data.security.events, null, 2)], {
+          type: "application/json",
+        }),
+        "streamlined-vault-security-events.json",
+      );
+      return;
+    }
     if (d.storagesetup)
       return workspaceDialog(user.tenants.find((t) => t.id === d.storagesetup));
     if (d.browsertransfers) {

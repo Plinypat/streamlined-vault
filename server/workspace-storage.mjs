@@ -694,6 +694,40 @@ export async function createWorkspaceStorage({
     }
     return clients.get(s.tenant);
   }
+  async function securityReview(tenant) {
+    if (demo)
+      return {
+        privateBucket: true,
+        encryptedAtRest: true,
+        restrictedCredential: true,
+        dedicated: !!(await get(tenant)),
+        synthetic: true,
+      };
+    const s = await get(tenant);
+    requireValue(
+      !s || s.status === "ready",
+      409,
+      "Complete storage setup first",
+    );
+    const secret = s
+      ? openCredentials(s.credential, encryptionKey(env), s.tenant)
+      : {
+          keyId: env.STORAGE_KEY_ID,
+          applicationKey: env.STORAGE_APPLICATION_KEY,
+        };
+    await provisioner.connect({
+      bucket: s ? s.bucket : env.STORAGE_BUCKET,
+      endpoint: s ? s.endpoint : env.STORAGE_ENDPOINT,
+      region: s ? s.region : env.STORAGE_REGION,
+      ...secret,
+    });
+    return {
+      privateBucket: true,
+      encryptedAtRest: true,
+      restrictedCredential: true,
+      dedicated: !!s,
+    };
+  }
   async function prepareBrowser(tenant) {
     if (demo) return;
     const s = await get(tenant);
@@ -712,5 +746,6 @@ export async function createWorkspaceStorage({
     location,
     forFile,
     prepareBrowser,
+    securityReview,
   };
 }

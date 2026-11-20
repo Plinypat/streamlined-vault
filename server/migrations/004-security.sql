@@ -1,0 +1,10 @@
+CREATE TABLE security_events(id TEXT PRIMARY KEY,created TEXT NOT NULL,event TEXT NOT NULL,severity TEXT NOT NULL,status INTEGER NOT NULL,actor TEXT NOT NULL,tenant TEXT NOT NULL,resource TEXT NOT NULL,request_id TEXT NOT NULL,route TEXT NOT NULL,method TEXT NOT NULL,previous TEXT NOT NULL,digest TEXT NOT NULL,seq BIGSERIAL UNIQUE NOT NULL);
+CREATE INDEX security_event_created ON streamlined_vault.security_events(created);
+CREATE TABLE security_state(id TEXT PRIMARY KEY,value TEXT NOT NULL,updated TEXT NOT NULL);
+CREATE TABLE security_alerts(id TEXT PRIMARY KEY,code TEXT NOT NULL UNIQUE,severity TEXT NOT NULL,first_seen TEXT NOT NULL,last_seen TEXT NOT NULL,occurrences BIGINT NOT NULL DEFAULT 1,status TEXT NOT NULL DEFAULT 'open',acknowledged_by TEXT,acknowledged_at TEXT);
+CREATE TABLE security_checks(id TEXT PRIMARY KEY,kind TEXT NOT NULL,tenant TEXT NOT NULL,status TEXT NOT NULL,result TEXT NOT NULL,created TEXT NOT NULL);
+CREATE TABLE audit_archives(id TEXT PRIMARY KEY,object_key TEXT NOT NULL UNIQUE,version TEXT NOT NULL,digest TEXT NOT NULL,source TEXT NOT NULL,first_id TEXT NOT NULL,last_id TEXT NOT NULL,source_digest TEXT NOT NULL,previous_archive TEXT NOT NULL,retain_until TEXT NOT NULL,created TEXT NOT NULL,seq BIGSERIAL UNIQUE NOT NULL);
+CREATE OR REPLACE FUNCTION streamlined_vault.reject_log_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Security logs are append only' USING ERRCODE='42501'; END $$;
+CREATE TRIGGER audit_append_only BEFORE UPDATE OR DELETE OR TRUNCATE ON streamlined_vault.audit FOR EACH STATEMENT EXECUTE FUNCTION streamlined_vault.reject_log_mutation();
+CREATE TRIGGER security_append_only BEFORE UPDATE OR DELETE OR TRUNCATE ON streamlined_vault.security_events FOR EACH STATEMENT EXECUTE FUNCTION streamlined_vault.reject_log_mutation();
+CREATE TRIGGER archive_append_only BEFORE UPDATE OR DELETE OR TRUNCATE ON streamlined_vault.audit_archives FOR EACH STATEMENT EXECUTE FUNCTION streamlined_vault.reject_log_mutation();

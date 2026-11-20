@@ -1,4 +1,7 @@
 import { createDirectTransfers } from "./direct-transfers.mjs";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createSecurityLog, routeClass } from "./security-log.mjs";
+import { createSecurityConsole } from "./security-console.mjs";
 import http from "node:http";
 import { openDatabase } from "./database.mjs";
 import {
@@ -66,6 +69,8 @@ const msp = new Set(
     .split(",")
     .map((v) => v.trim().toLowerCase()),
 );
+const securityLog = createSecurityLog({ db });
+const requestContext = new AsyncLocalStorage();
 const workspaceStorage = await createWorkspaceStorage({ db, env, demo, data });
 // Read-only diagnostics: authorize/check capabilities only. Never creates resources.
 if (
@@ -145,7 +150,12 @@ function error(status, message) {
 function need(test, status = 403, message = "Access denied") {
   if (!test) throw error(status, message);
 }
-function send(res, status, value) {
+async function send(res, status, value) {
+  const context = requestContext.getStore();
+  if (context?.actor && status < 400 && !context.responded) {
+    context.responded = true;
+    await securityLog.event("request_completed", { ...context, status });
+  }
   if (res.headersSent) return;
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(value));
@@ -246,6 +256,7 @@ async function authenticate(req) {
 async function tenantAccess(user, tenant, write = false, admin = false) {
   const t = await one("SELECT * FROM tenants WHERE id=?", tenant);
   need(t, 404, "Workspace not found");
+  if (requestContext.getStore()) requestContext.getStore().tenant = t.id;
   need(
     t.kind !== "internal" ||
       (user.msp && t.owner_email === user.email) ||
@@ -389,888 +400,1090 @@ const directTransfers = createDirectTransfers({
   partSize: PART,
   audit,
 });
+const security = createSecurityConsole({
+  db,
+  env,
+  demo,
+  data,
+  log: securityLog,
+  workspaceStorage,
+  audit,
+});
 const limits = new Map();
-const server = http.createServer(async (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader(
-    "Content-Security-Policy",
-    contentSecurityPolicy(clerkAuth?.config.frontendApi, !demo),
-  );
-  if (!demo)
-    res.setHeader(
-      "Strict-Transport-Security",
-      "max-age=31536000; includeSubDomains",
-    );
-  try {
-    const url = new URL(req.url, origin),
-      path = url.pathname,
-      method = req.method;
-    const ip = req.socket.remoteAddress;
-    const l = limits.get(ip) || { n: 0, until: Date.now() + 60000 };
-    if (l.until < Date.now()) {
-      l.n = 0;
-      l.until = Date.now() + 60000;
-    }
-    l.n++;
-    limits.set(ip, l);
-    need(l.n < 1800, 429, "Too many requests; retry shortly");
-    if (path === "/api/config")
-      return send(res, 200, {
-        demo,
-        ready,
-        brand: "Streamlined Vault",
-        partSize: PART,
-        transferLimits: {
-          maxFileBytes: MAX,
-          pilot: pilotTransfer,
-          direct: !demo,
-          linkExpirySeconds: 60,
-        },
-        auth: demo ? "demo" : "clerk",
-        ...(clerkAuth
-          ? {
-              clerk: {
-                publishableKey: clerkAuth.config.publishableKey,
-                frontendApi: clerkAuth.config.frontendApi,
-              },
-            }
-          : {}),
-      });
-    if (path === "/health") {
-      await one("SELECT 1 AS ok");
-      return send(res, 200, { ok: true, metadata: db.kind });
-    }
-    if (path === "/api/device-enroll" && method === "POST")
-      return await devices.enroll(req, res);
-    if (path === "/auth/demo" && method === "POST") {
-      need(demo, 404);
-      need(req.headers.origin === origin);
-      const b = await body(req);
-      return send(
-        res,
-        200,
-        await login(res, {
-          email:
-            b.role === "msp" ? "admin@example.test" : "client@example.test",
-          name:
-            b.role === "msp" ? "MSP Administrator" : "Practice Administrator",
-          msp: b.role === "msp",
-        }),
+const server = http.createServer((req, res) =>
+  requestContext.run(
+    { requestId: id(), method: req.method, route: "other" },
+    async () => {
+      const context = requestContext.getStore();
+      res.setHeader("X-Request-ID", context.requestId);
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Referrer-Policy", "no-referrer");
+      res.setHeader("X-Frame-Options", "DENY");
+      res.setHeader(
+        "Content-Security-Policy",
+        contentSecurityPolicy(clerkAuth?.config.frontendApi, !demo),
       );
-    }
-    if (path === "/auth/complete" && method === "POST") {
-      need(!demo, 404);
-      need(req.headers.origin === origin, 403, "Request origin not allowed");
-      const identity = await clerkAuth.authenticate(req);
-      return send(res, 200, await login(res, identity));
-    }
-    if (path.startsWith("/api/")) {
-      const user = await authenticate(req);
-      if (path.startsWith("/api/device/"))
-        return await devices.agent(
-          req,
-          res,
-          user,
-          path.slice("/api/device".length),
-        );
-      if (path === "/api/me") {
-        const tenants = await Promise.all(
-          (await accessible(user)).map(async (t) => ({
-            ...t,
-            storage: await workspaceStorage.view(t.id, user.msp),
-            plan: await mspConsole.plan(t.id),
-            used: await usage(t.id),
-            role: user.msp
-              ? "admin"
-              : (
-                  await one(
-                    "SELECT role FROM members WHERE tenant=? AND email=?",
-                    t.id,
-                    user.email,
-                  )
-                )?.role,
-          })),
-        );
-        return send(res, 200, {
-          ...user,
-          ...(user.msp
-            ? { storageCapabilities: workspaceStorage.capabilities() }
-            : {}),
-          tenants,
-        });
-      }
-      if (path === "/api/logout" && method === "POST") {
-        if (!demo) await clerkAuth.revoke(user.clerkSessionId);
-        await run("DELETE FROM sessions WHERE hash=?", user.sessionHash || "");
+      if (!demo)
         res.setHeader(
-          "Set-Cookie",
-          `ss_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${demo ? "" : "; Secure"}`,
+          "Strict-Transport-Security",
+          "max-age=31536000; includeSubDomains",
         );
-        return send(res, 200, { ok: true });
-      }
-      if (path.startsWith("/api/msp/")) {
-        need(user.msp);
-        if (path === "/api/msp/overview" && method === "GET")
-          return send(res, 200, await mspConsole.overview(user));
-        if (path === "/api/msp/settings" && method === "GET")
+      try {
+        const url = new URL(req.url, origin),
+          path = url.pathname,
+          method = req.method;
+        context.route = routeClass(path);
+        const ip = req.socket.remoteAddress;
+        const l = limits.get(ip) || { n: 0, until: Date.now() + 60000 };
+        if (l.until < Date.now()) {
+          l.n = 0;
+          l.until = Date.now() + 60000;
+        }
+        l.n++;
+        limits.set(ip, l);
+        need(l.n < 1800, 429, "Too many requests; retry shortly");
+        if (path === "/internal/security-maintenance" && method === "GET") {
+          const expected = env.CRON_SECRET;
+          need(
+            typeof expected === "string" &&
+              expected.length >= 32 &&
+              typeof req.headers.authorization === "string" &&
+              Buffer.byteLength(req.headers.authorization) ===
+                Buffer.byteLength("Bearer " + expected) &&
+              timingSafeEqual(
+                Buffer.from(req.headers.authorization),
+                Buffer.from("Bearer " + expected),
+              ),
+            401,
+            "Maintenance authorization required",
+          );
+          context.maintenanceAuthenticated = true;
+          return send(res, 200, await security.maintenance());
+        }
+        if (path === "/api/config")
           return send(res, 200, {
-            email: user.email,
-            internalWorkspace: await one(
-              "SELECT id,name,status FROM tenants WHERE kind='internal' AND owner_email=?",
-              user.email,
-            ),
-            policy: await mspConsole.settings(),
-            storageCapabilities: workspaceStorage.capabilities(),
+            demo,
+            ready,
+            brand: "Streamlined Vault",
+            partSize: PART,
+            transferLimits: {
+              maxFileBytes: MAX,
+              pilot: pilotTransfer,
+              direct: !demo,
+              linkExpirySeconds: 60,
+            },
+            auth: demo ? "demo" : "clerk",
+            ...(clerkAuth
+              ? {
+                  clerk: {
+                    publishableKey: clerkAuth.config.publishableKey,
+                    frontendApi: clerkAuth.config.frontendApi,
+                  },
+                }
+              : {}),
           });
-        if (path === "/api/msp/plan" && method === "PATCH")
+        if (path === "/health") {
+          await one("SELECT 1 AS ok");
+          return send(res, 200, { ok: true, metadata: db.kind });
+        }
+        if (path === "/api/device-enroll" && method === "POST")
+          return await devices.enroll(req, res);
+        if (path === "/auth/demo" && method === "POST") {
+          need(demo, 404);
+          need(req.headers.origin === origin);
+          const b = await body(req);
           return send(
             res,
             200,
-            await mspConsole.savePlan(null, await body(req), user.email),
+            await login(res, {
+              email:
+                b.role === "msp" ? "admin@example.test" : "client@example.test",
+              name:
+                b.role === "msp"
+                  ? "MSP Administrator"
+                  : "Practice Administrator",
+              msp: b.role === "msp",
+            }),
           );
-        if (path === "/api/msp/inventory" && method === "POST")
-          return send(res, 200, await mspConsole.refreshInventory());
-        throw error(404, "Not found");
-      }
-      if (path === "/api/tenants" && method === "POST") {
-        need(user.msp);
-        const b = await body(req);
-        need(
-          typeof b.name === "string" &&
-            b.name.trim().length > 1 &&
-            b.name.length <= 100,
-          400,
-          "Practice name is required",
-        );
-        need(
-          !b.requestId || /^[a-f0-9-]{36}$/.test(b.requestId),
-          400,
-          "Invalid setup request identifier",
-        );
-        const kind = b.kind || "client";
-        need(
-          ["client", "internal"].includes(kind),
-          400,
-          "Invalid workspace type",
-        );
-        const tenant = await db.transaction(async () => {
-          if (kind === "internal") {
-            await db.lock("internal-owner:" + user.email);
-            const own = await one(
-              "SELECT id FROM tenants WHERE kind='internal' AND owner_email=?",
-              user.email,
-            );
-            if (own) return own.id;
-          }
-          if (b.requestId) await db.lock("setup:" + b.requestId);
-          const prior = b.requestId
-            ? await one(
-                "SELECT * FROM storage_requests WHERE request_id=?",
-                b.requestId,
-              )
-            : null;
+        }
+        if (path === "/auth/complete" && method === "POST") {
+          need(!demo, 404);
           need(
-            !prior || prior.name === b.name.trim(),
-            409,
-            "Setup request is already assigned to a different practice",
+            req.headers.origin === origin,
+            403,
+            "Request origin not allowed",
           );
-          if (prior) {
-            const assigned = await one(
-              "SELECT kind,owner_email FROM tenants WHERE id=?",
-              prior.tenant,
+          const identity = await clerkAuth.authenticate(req);
+          context.actor = identity.email;
+          await securityLog.event("sign_in", context);
+          await audit("msp", identity.email, "Sign-in completed");
+          return send(res, 200, await login(res, identity));
+        }
+        if (path.startsWith("/api/")) {
+          const user = await authenticate(req);
+          context.actor = user.email;
+          await securityLog.event("request_authenticated", context);
+          if (path.startsWith("/api/msp/security")) {
+            need(user.msp);
+            if (path === "/api/msp/security" && method === "GET")
+              return send(res, 200, await security.status());
+            if (path === "/api/msp/security/maintenance" && method === "POST")
+              return send(res, 200, await security.maintenance(user.email));
+            if (
+              path === "/api/msp/security/storage-check" &&
+              method === "POST"
+            ) {
+              const b = await body(req);
+              await tenantAccess(user, b.tenant);
+              return send(
+                res,
+                200,
+                await security.storageCheck(b.tenant, user.email),
+              );
+            }
+            if (
+              path === "/api/msp/security/access-review" &&
+              method === "POST"
+            ) {
+              await security.accessReview(user.email);
+              return send(res, 200, { ok: true });
+            }
+            if (path === "/api/msp/security/access" && method === "GET")
+              return send(res, 200, {
+                administrators: [...msp],
+                members: await q(
+                  "SELECT tenant,email,role FROM members ORDER BY tenant,email",
+                ),
+              });
+            if (path === "/api/msp/security/acknowledge" && method === "POST") {
+              const b = await body(req);
+              need(typeof b.id === "string" && b.id.length <= 100, 400);
+              await security.acknowledge(b.id, user.email);
+              return send(res, 200, { ok: true });
+            }
+            throw error(404, "Security operation not found");
+          }
+          if (path.startsWith("/api/device/"))
+            return await devices.agent(
+              req,
+              res,
+              user,
+              path.slice("/api/device".length),
+            );
+          if (path === "/api/me") {
+            const tenants = await Promise.all(
+              (await accessible(user)).map(async (t) => ({
+                ...t,
+                storage: await workspaceStorage.view(t.id, user.msp),
+                plan: await mspConsole.plan(t.id),
+                used: await usage(t.id),
+                role: user.msp
+                  ? "admin"
+                  : (
+                      await one(
+                        "SELECT role FROM members WHERE tenant=? AND email=?",
+                        t.id,
+                        user.email,
+                      )
+                    )?.role,
+              })),
+            );
+            return send(res, 200, {
+              ...user,
+              ...(user.msp
+                ? { storageCapabilities: workspaceStorage.capabilities() }
+                : {}),
+              tenants,
+            });
+          }
+          if (path === "/api/logout" && method === "POST") {
+            await securityLog.event("sign_out", context);
+            await audit("msp", user.email, "Sign-out requested");
+            if (!demo) await clerkAuth.revoke(user.clerkSessionId);
+            await run(
+              "DELETE FROM sessions WHERE hash=?",
+              user.sessionHash || "",
+            );
+            res.setHeader(
+              "Set-Cookie",
+              `ss_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${demo ? "" : "; Secure"}`,
+            );
+            return send(res, 200, { ok: true });
+          }
+          if (path.startsWith("/api/msp/")) {
+            need(user.msp);
+            if (path === "/api/msp/overview" && method === "GET")
+              return send(res, 200, await mspConsole.overview(user));
+            if (path === "/api/msp/settings" && method === "GET")
+              return send(res, 200, {
+                email: user.email,
+                internalWorkspace: await one(
+                  "SELECT id,name,status FROM tenants WHERE kind='internal' AND owner_email=?",
+                  user.email,
+                ),
+                policy: await mspConsole.settings(),
+                storageCapabilities: workspaceStorage.capabilities(),
+              });
+            if (path === "/api/msp/plan" && method === "PATCH")
+              return send(
+                res,
+                200,
+                await mspConsole.savePlan(null, await body(req), user.email),
+              );
+            if (path === "/api/msp/inventory" && method === "POST")
+              return send(res, 200, await mspConsole.refreshInventory());
+            throw error(404, "Not found");
+          }
+          if (path === "/api/tenants" && method === "POST") {
+            need(user.msp);
+            const b = await body(req);
+            need(
+              typeof b.name === "string" &&
+                b.name.trim().length > 1 &&
+                b.name.length <= 100,
+              400,
+              "Practice name is required",
             );
             need(
-              assigned.kind === kind &&
-                (kind !== "internal" || assigned.owner_email === user.email),
-              409,
-              "Setup request is assigned to another workspace type",
+              !b.requestId || /^[a-f0-9-]{36}$/.test(b.requestId),
+              400,
+              "Invalid setup request identifier",
             );
-            return prior.tenant;
-          }
-          const tid = id();
-          workspaceStorage.input(b.storage, tid);
-          await run(
-            "INSERT INTO tenants(id,name,quota,status) VALUES(?,?,?,?)",
-            tid,
-            b.name.trim(),
-            4_000_000_000_000,
-            "storage_pending",
-          );
-          await run(
-            "UPDATE tenants SET kind=?,owner_email=? WHERE id=?",
-            kind,
-            kind === "internal" ? user.email : null,
-            tid,
-          );
-          if (b.requestId)
-            await run(
-              "INSERT INTO storage_requests VALUES(?,?,?)",
-              b.requestId,
-              tid,
-              b.name.trim(),
+            const kind = b.kind || "client";
+            need(
+              ["client", "internal"].includes(kind),
+              400,
+              "Invalid workspace type",
             );
-          await audit(tid, user.email, "Workspace storage setup started");
-          return tid;
-        });
-        const current = await workspaceStorage.view(tenant, true);
-        if (current.kind === "dedicated" && current.status === "ready") {
-          await run(
-            "UPDATE tenants SET status='active' WHERE id=? AND status IN ('storage_pending','storage_error')",
-            tenant,
-          );
-          return send(res, 200, { id: tenant, storage: current });
-        }
-        try {
-          const storage = await workspaceStorage.provision(tenant, b.storage);
-          await run("UPDATE tenants SET status='active' WHERE id=?", tenant);
-          await audit(
-            tenant,
-            user.email,
-            "Dedicated workspace storage connected",
-          );
-          return send(res, 201, { id: tenant, storage });
-        } catch (e) {
-          if (e.status !== 409)
-            await run(
-              "UPDATE tenants SET status='storage_error' WHERE id=? AND status<>'active'",
-              tenant,
-            );
-          await audit(
-            tenant,
-            user.email,
-            "Workspace storage setup needs attention",
-          );
-          throw e;
-        }
-      }
-      const route = /^\/api\/tenants\/([^/]+)(.*)$/.exec(path);
-      need(route, 404, "Not found");
-      const tenant = route[1],
-        tail = route[2];
-      const t = await tenantAccess(user, tenant);
-      if (tail === "/plan" && method === "GET")
-        return send(res, 200, {
-          ...(await mspConsole.plan(tenant)),
-          ...(user.msp ? { draft: await mspConsole.policy(tenant) } : {}),
-        });
-      if (tail === "/plan" && method === "PATCH") {
-        need(user.msp);
-        return send(
-          res,
-          200,
-          await mspConsole.savePlan(tenant, await body(req), user.email),
-        );
-      }
-      if (tail === "/devices" || tail.startsWith("/devices/"))
-        return await devices.portal(req, res, user, tenant, tail);
-      if (tail === "/storage" && method === "POST") {
-        need(user.msp);
-        const b = await body(req);
-        const storage = await workspaceStorage.provision(tenant, b.storage);
-        if (["storage_pending", "storage_error"].includes(t.status))
-          await run("UPDATE tenants SET status='active' WHERE id=?", tenant);
-        await audit(
-          tenant,
-          user.email,
-          "Dedicated workspace storage connected",
-        );
-        return send(res, 200, storage);
-      }
-      if (tail === "/storage/browser-transfers" && method === "POST") {
-        need(user.msp);
-        await workspaceStorage.prepareBrowser(tenant);
-        await audit(tenant, user.email, "Browser transfer origin configured");
-        return send(res, 200, { ok: true });
-      }
-      if (tail === "/settings" && method === "PATCH") {
-        need(user.msp);
-        need(
-          (await workspaceStorage.view(tenant)).status === "ready",
-          409,
-          "Complete storage setup first",
-        );
-        const b = await body(req);
-        need(["active", "suspended"].includes(b.status), 400);
-        await run("UPDATE tenants SET status=? WHERE id=?", b.status, tenant);
-        await audit(tenant, user.email, "Workspace status changed", b.status);
-        return send(res, 200, { ok: true });
-      }
-      if (tail === "/files" && method === "GET") {
-        need(t.role !== "uploader");
-        return send(res, 200, {
-          files: (
-            await q(
-              "SELECT * FROM files WHERE tenant=? AND status=? ORDER BY created DESC",
-              tenant,
-              url.searchParams.get("trash") === "true" ? "trash" : "ready",
-            )
-          ).map(publicFile),
-          used: await usage(tenant),
-          quota: t.quota,
-        });
-      }
-      if (tail === "/members" && method === "GET") {
-        await tenantAccess(user, tenant, false, true);
-        return send(
-          res,
-          200,
-          await q("SELECT email,role FROM members WHERE tenant=?", tenant),
-        );
-      }
-      if (tail === "/members" && method === "POST") {
-        need(
-          t.kind !== "internal",
-          403,
-          "Private MSP workspaces cannot be shared with practice members",
-        );
-        await tenantAccess(user, tenant, false, true);
-        const b = await body(req);
-        need(
-          /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email || "") &&
-            ["admin", "editor", "viewer", "uploader"].includes(b.role),
-          400,
-          "Valid email and role required",
-        );
-        await run(
-          "INSERT INTO members VALUES(?,?,?) ON CONFLICT(tenant,email) DO UPDATE SET role=excluded.role",
-          tenant,
-          b.email.toLowerCase(),
-          b.role,
-        );
-        await audit(tenant, user.email, "Member access assigned", b.role);
-        return send(res, 200, { ok: true });
-      }
-      if (tail === "/members" && method === "DELETE") {
-        await tenantAccess(user, tenant, false, true);
-        const b = await body(req);
-        need(
-          b.email !== user.email,
-          400,
-          "Use another administrator to remove your own access",
-        );
-        need(
-          await one(
-            "SELECT email FROM members WHERE tenant=? AND email=?",
-            tenant,
-            b.email,
-          ),
-          404,
-        );
-        await run(
-          "DELETE FROM members WHERE tenant=? AND email=?",
-          tenant,
-          b.email,
-        );
-        await audit(tenant, user.email, "Member access removed");
-        return send(res, 200, { ok: true });
-      }
-      if (tail === "/audit" && method === "GET") {
-        need(["admin", "editor", "viewer"].includes(t.role));
-        const events = await q(
-          "SELECT id,actor,action,resource,created FROM audit WHERE tenant=? ORDER BY rowid DESC LIMIT 500",
-          tenant,
-        );
-        if (url.searchParams.has("export")) {
-          await audit(tenant, user.email, "Activity export requested");
-          res.writeHead(200, {
-            "Content-Type": "application/json",
-            "Content-Disposition": 'attachment; filename="activity.json"',
-          });
-          return res.end(JSON.stringify(events, null, 2));
-        }
-        return send(res, 200, events);
-      }
-      if (tail === "/notices")
-        return send(
-          res,
-          200,
-          await q(
-            "SELECT * FROM notices WHERE tenant=? ORDER BY created DESC LIMIT 30",
-            tenant,
-          ),
-        );
-      if (tail === "/tokens" && method === "GET") {
-        await tenantAccess(user, tenant, false, true);
-        return send(
-          res,
-          200,
-          await q(
-            "SELECT id,label,scope,expires,revoked,last FROM tokens WHERE tenant=?",
-            tenant,
-          ),
-        );
-      }
-      if (tail === "/tokens" && method === "POST") {
-        await tenantAccess(user, tenant, false, true);
-        const b = await body(req);
-        need(
-          ["upload", "read"].includes(b.scope) &&
-            typeof b.label === "string" &&
-            b.label.length > 0 &&
-            b.label.length < 80,
-          400,
-          "Label and scope required",
-        );
-        const token = "ss_" + randomBytes(32).toString("base64url"),
-          tid = id(),
-          expires =
-            Date.now() +
-            Math.min(Math.max(Number(b.days) || 30, 1), 90) * 86400000;
-        await run(
-          "INSERT INTO tokens(id,tenant,label,hash,scope,expires) VALUES(?,?,?,?,?,?)",
-          tid,
-          tenant,
-          b.label,
-          hash(token),
-          b.scope,
-          expires,
-        );
-        await audit(tenant, user.email, "Automation credential created", tid);
-        return send(res, 201, { id: tid, token, expires });
-      }
-      if (/^\/tokens\/[^/]+$/.test(tail) && method === "DELETE") {
-        await tenantAccess(user, tenant, false, true);
-        await run(
-          "UPDATE tokens SET revoked=1 WHERE id=? AND tenant=?",
-          tail.split("/")[2],
-          tenant,
-        );
-        await audit(
-          tenant,
-          user.email,
-          "Automation credential revoked",
-          tail.split("/")[2],
-        );
-        return send(res, 200, { ok: true });
-      }
-      if (tail === "/uploads" && method === "POST") {
-        await tenantAccess(user, tenant, true);
-        need(
-          ready,
-          503,
-          "Storage activation requires completed operator review",
-        );
-        const b = await body(req);
-        need(
-          typeof b.name === "string" &&
-            b.name.length > 0 &&
-            b.name.length <= 200 &&
-            !/[\x00-\x1f/\\]/.test(b.name),
-          400,
-          "Invalid file name",
-        );
-        need(
-          typeof b.folder === "string" &&
-            b.folder.length <= 200 &&
-            !/[\x00-\x1f]/.test(b.folder),
-          400,
-          "Invalid folder",
-        );
-        need(
-          Number.isSafeInteger(b.size) && b.size > 0 && b.size <= MAX,
-          400,
-          "File exceeds the current upload size limit shown in your plan",
-        );
-        need(
-          !b.requestId || /^[a-f0-9-]{36}$/.test(b.requestId),
-          400,
-          "Invalid request identifier",
-        );
-        const fid = id(),
-          key = `tenants/${tenant}/objects/${fid}`,
-          storageTenant = await workspaceStorage.location(tenant),
-          storage = await workspaceStorage.forFile({
-            tenant,
-            storage_tenant: storageTenant,
-          });
-        if (b.browser && storage.transport === "direct")
-          await workspaceStorage.prepareBrowser(tenant);
-        const previous = await db.transaction(async () => {
-          await db.lock("tenant:" + tenant);
-          if (b.requestId) {
-            const p = await one(
-              "SELECT * FROM files WHERE tenant=? AND requestid=?",
-              tenant,
-              b.requestId,
-            );
-            if (p) {
+            const tenant = await db.transaction(async () => {
+              if (kind === "internal") {
+                await db.lock("internal-owner:" + user.email);
+                const own = await one(
+                  "SELECT id FROM tenants WHERE kind='internal' AND owner_email=?",
+                  user.email,
+                );
+                if (own) return own.id;
+              }
+              if (b.requestId) await db.lock("setup:" + b.requestId);
+              const prior = b.requestId
+                ? await one(
+                    "SELECT * FROM storage_requests WHERE request_id=?",
+                    b.requestId,
+                  )
+                : null;
               need(
-                p.name === b.name && p.size === b.size && p.folder === b.folder,
+                !prior || prior.name === b.name.trim(),
                 409,
-                "Request identifier already used",
+                "Setup request is already assigned to a different practice",
               );
-              need(p.upload, 409, "Upload is still preparing; retry shortly");
-              return p;
+              if (prior) {
+                const assigned = await one(
+                  "SELECT kind,owner_email FROM tenants WHERE id=?",
+                  prior.tenant,
+                );
+                need(
+                  assigned.kind === kind &&
+                    (kind !== "internal" ||
+                      assigned.owner_email === user.email),
+                  409,
+                  "Setup request is assigned to another workspace type",
+                );
+                return prior.tenant;
+              }
+              const tid = id();
+              workspaceStorage.input(b.storage, tid);
+              await run(
+                "INSERT INTO tenants(id,name,quota,status) VALUES(?,?,?,?)",
+                tid,
+                b.name.trim(),
+                4_000_000_000_000,
+                "storage_pending",
+              );
+              await run(
+                "UPDATE tenants SET kind=?,owner_email=? WHERE id=?",
+                kind,
+                kind === "internal" ? user.email : null,
+                tid,
+              );
+              if (b.requestId)
+                await run(
+                  "INSERT INTO storage_requests VALUES(?,?,?)",
+                  b.requestId,
+                  tid,
+                  b.name.trim(),
+                );
+              await audit(tid, user.email, "Workspace storage setup started");
+              return tid;
+            });
+            const current = await workspaceStorage.view(tenant, true);
+            if (current.kind === "dedicated" && current.status === "ready") {
+              await run(
+                "UPDATE tenants SET status='active' WHERE id=? AND status IN ('storage_pending','storage_error')",
+                tenant,
+              );
+              return send(res, 200, { id: tenant, storage: current });
+            }
+            try {
+              const storage = await workspaceStorage.provision(
+                tenant,
+                b.storage,
+              );
+              await run(
+                "UPDATE tenants SET status='active' WHERE id=?",
+                tenant,
+              );
+              await audit(
+                tenant,
+                user.email,
+                "Dedicated workspace storage connected",
+              );
+              return send(res, 201, { id: tenant, storage });
+            } catch (e) {
+              if (e.status !== 409)
+                await run(
+                  "UPDATE tenants SET status='storage_error' WHERE id=? AND status<>'active'",
+                  tenant,
+                );
+              await audit(
+                tenant,
+                user.email,
+                "Workspace storage setup needs attention",
+              );
+              throw e;
             }
           }
-          need(
-            (await workspaceStorage.location(tenant)) === storageTenant,
-            409,
-            "Storage assignment changed; retry upload",
-          );
-          need(
-            (await usage(tenant)) + b.size <= t.quota,
-            409,
-            "Workspace storage allowance exceeded",
-          );
-          await run(
-            "INSERT INTO files(id,tenant,name,folder,size,key,status,created,requestid,storage_tenant) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            fid,
-            tenant,
-            b.name,
-            b.folder,
-            b.size,
-            key,
-            "uploading",
-            now(),
-            b.requestId || null,
-            storageTenant,
-          );
-          return null;
-        });
-        if (previous)
-          return send(res, 200, {
-            id: previous.id,
-            transport: storage.transport || "proxy",
-            partSize: PART,
-            parts: Math.ceil(previous.size / PART),
-          });
-        try {
-          const upload = await storage.start(key);
-          await run("UPDATE files SET upload=? WHERE id=?", upload, fid);
-        } catch (e) {
-          await run("DELETE FROM files WHERE id=?", fid);
-          throw e;
-        }
-        await audit(tenant, user.email, "Upload started", fid);
-        return send(res, 201, {
-          id: fid,
-          transport: storage.transport || "proxy",
-          partSize: PART,
-          parts: Math.ceil(b.size / PART),
-        });
-      }
-      const directPart = /^\/uploads\/([^/]+)\/parts\/(\d+)\/(sign|ack)$/.exec(
-        tail,
-      );
-      if (directPart && method === "POST") {
-        await tenantAccess(user, tenant, true);
-        need(ready, 503, "Storage not activated");
-        const input = await body(req);
-        const value = await db.transaction(async () => {
-          await db.lock("file:" + directPart[1]);
-          await tenantAccess(user, tenant, true);
-          const file = await one(
-            "SELECT * FROM files WHERE id=? AND tenant=?",
-            directPart[1],
-            tenant,
-          );
-          need(file, 404, "Upload not found");
-          return await directTransfers.part(
-            file,
-            Number(directPart[2]),
-            directPart[3],
-            input,
-          );
-        });
-        return send(res, 200, value);
-      }
-      const ur =
-        /^\/uploads\/([^/]+)(?:\/(parts)(?:\/(\d+))?|\/(complete))?$/.exec(
-          tail,
-        );
-      if (ur) {
-        await tenantAccess(user, tenant, true);
-        need(ready, 503, "Storage not activated");
-        const content =
-          method === "PUT" && ur[2] ? await body(req, PART, true) : null;
-        if (content) await mspConsole.recordUpload(tenant, content.length);
-        if (content) {
-          const checksum = req.headers["x-content-sha256"];
-          need(
-            typeof checksum === "string" &&
-              /^[a-f0-9]{64}$/.test(checksum) &&
-              hash(content) === checksum,
-            400,
-            "Transfer checksum mismatch",
-          );
-        }
-        const result = await db.transaction(async () => {
-          await db.lock("file:" + ur[1]);
-          await tenantAccess(user, tenant, true);
-          const f = await one(
-            "SELECT * FROM files WHERE id=? AND tenant=?",
-            ur[1],
-            tenant,
-          );
-          need(f, 404, "Upload not found");
-          if (method === "GET")
-            return {
-              value: {
-                id: f.id,
-                name: f.name,
-                size: f.size,
-                status: f.status,
-                transport:
-                  (await workspaceStorage.forFile(f)).transport || "proxy",
+          const route = /^\/api\/tenants\/([^/]+)(.*)$/.exec(path);
+          need(route, 404, "Not found");
+          const tenant = route[1],
+            tail = route[2];
+          const t = await tenantAccess(user, tenant);
+          context.tenant = tenant;
+          if (tail === "/plan" && method === "GET")
+            return send(res, 200, {
+              ...(await mspConsole.plan(tenant)),
+              ...(user.msp ? { draft: await mspConsole.policy(tenant) } : {}),
+            });
+          if (tail === "/plan" && method === "PATCH") {
+            need(user.msp);
+            return send(
+              res,
+              200,
+              await mspConsole.savePlan(tenant, await body(req), user.email),
+            );
+          }
+          if (tail === "/devices" || tail.startsWith("/devices/"))
+            return await devices.portal(req, res, user, tenant, tail);
+          if (tail === "/storage" && method === "POST") {
+            need(user.msp);
+            const b = await body(req);
+            const storage = await workspaceStorage.provision(tenant, b.storage);
+            if (["storage_pending", "storage_error"].includes(t.status))
+              await run(
+                "UPDATE tenants SET status='active' WHERE id=?",
+                tenant,
+              );
+            await audit(
+              tenant,
+              user.email,
+              "Dedicated workspace storage connected",
+            );
+            return send(res, 200, storage);
+          }
+          if (tail === "/storage/browser-transfers" && method === "POST") {
+            need(user.msp);
+            await workspaceStorage.prepareBrowser(tenant);
+            await audit(
+              tenant,
+              user.email,
+              "Browser transfer origin configured",
+            );
+            return send(res, 200, { ok: true });
+          }
+          if (tail === "/settings" && method === "PATCH") {
+            need(user.msp);
+            need(
+              (await workspaceStorage.view(tenant)).status === "ready",
+              409,
+              "Complete storage setup first",
+            );
+            const b = await body(req);
+            need(["active", "suspended"].includes(b.status), 400);
+            await run(
+              "UPDATE tenants SET status=? WHERE id=?",
+              b.status,
+              tenant,
+            );
+            await audit(
+              tenant,
+              user.email,
+              "Workspace status changed",
+              b.status,
+            );
+            return send(res, 200, { ok: true });
+          }
+          if (tail === "/files" && method === "GET") {
+            need(t.role !== "uploader");
+            return send(res, 200, {
+              files: (
+                await q(
+                  "SELECT * FROM files WHERE tenant=? AND status=? ORDER BY created DESC",
+                  tenant,
+                  url.searchParams.get("trash") === "true" ? "trash" : "ready",
+                )
+              ).map(publicFile),
+              used: await usage(tenant),
+              quota: t.quota,
+            });
+          }
+          if (tail === "/members" && method === "GET") {
+            await tenantAccess(user, tenant, false, true);
+            return send(
+              res,
+              200,
+              await q("SELECT email,role FROM members WHERE tenant=?", tenant),
+            );
+          }
+          if (tail === "/members" && method === "POST") {
+            need(
+              t.kind !== "internal",
+              403,
+              "Private MSP workspaces cannot be shared with practice members",
+            );
+            await tenantAccess(user, tenant, false, true);
+            const b = await body(req);
+            need(
+              /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email || "") &&
+                ["admin", "editor", "viewer", "uploader"].includes(b.role),
+              400,
+              "Valid email and role required",
+            );
+            await run(
+              "INSERT INTO members VALUES(?,?,?) ON CONFLICT(tenant,email) DO UPDATE SET role=excluded.role",
+              tenant,
+              b.email.toLowerCase(),
+              b.role,
+            );
+            await audit(
+              tenant,
+              user.email,
+              "Member access assigned",
+              hash(b.email.toLowerCase()) + ":" + b.role,
+            );
+            return send(res, 200, { ok: true });
+          }
+          if (tail === "/members" && method === "DELETE") {
+            await tenantAccess(user, tenant, false, true);
+            const b = await body(req);
+            need(
+              b.email !== user.email,
+              400,
+              "Use another administrator to remove your own access",
+            );
+            need(
+              await one(
+                "SELECT email FROM members WHERE tenant=? AND email=?",
+                tenant,
+                b.email,
+              ),
+              404,
+            );
+            await run(
+              "DELETE FROM members WHERE tenant=? AND email=?",
+              tenant,
+              b.email,
+            );
+            await audit(
+              tenant,
+              user.email,
+              "Member access removed",
+              hash(b.email.toLowerCase()),
+            );
+            return send(res, 200, { ok: true });
+          }
+          if (tail === "/audit" && method === "GET") {
+            need(["admin", "editor", "viewer"].includes(t.role));
+            const events = await q(
+              "SELECT id,actor,action,resource,created FROM audit WHERE tenant=? ORDER BY rowid DESC LIMIT 500",
+              tenant,
+            );
+            if (url.searchParams.has("export")) {
+              await audit(tenant, user.email, "Activity export requested");
+              res.writeHead(200, {
+                "Content-Type": "application/json",
+                "Content-Disposition": 'attachment; filename="activity.json"',
+              });
+              return res.end(JSON.stringify(events, null, 2));
+            }
+            return send(res, 200, events);
+          }
+          if (tail === "/notices")
+            return send(
+              res,
+              200,
+              await q(
+                "SELECT * FROM notices WHERE tenant=? ORDER BY created DESC LIMIT 30",
+                tenant,
+              ),
+            );
+          if (tail === "/tokens" && method === "GET") {
+            await tenantAccess(user, tenant, false, true);
+            return send(
+              res,
+              200,
+              await q(
+                "SELECT id,label,scope,expires,revoked,last FROM tokens WHERE tenant=?",
+                tenant,
+              ),
+            );
+          }
+          if (tail === "/tokens" && method === "POST") {
+            await tenantAccess(user, tenant, false, true);
+            const b = await body(req);
+            need(
+              ["upload", "read"].includes(b.scope) &&
+                typeof b.label === "string" &&
+                b.label.length > 0 &&
+                b.label.length < 80,
+              400,
+              "Label and scope required",
+            );
+            const token = "ss_" + randomBytes(32).toString("base64url"),
+              tid = id(),
+              expires =
+                Date.now() +
+                Math.min(Math.max(Number(b.days) || 30, 1), 90) * 86400000;
+            await run(
+              "INSERT INTO tokens(id,tenant,label,hash,scope,expires) VALUES(?,?,?,?,?,?)",
+              tid,
+              tenant,
+              b.label,
+              hash(token),
+              b.scope,
+              expires,
+            );
+            await audit(
+              tenant,
+              user.email,
+              "Automation credential created",
+              tid,
+            );
+            return send(res, 201, { id: tid, token, expires });
+          }
+          if (/^\/tokens\/[^/]+$/.test(tail) && method === "DELETE") {
+            await tenantAccess(user, tenant, false, true);
+            await run(
+              "UPDATE tokens SET revoked=1 WHERE id=? AND tenant=?",
+              tail.split("/")[2],
+              tenant,
+            );
+            await audit(
+              tenant,
+              user.email,
+              "Automation credential revoked",
+              tail.split("/")[2],
+            );
+            return send(res, 200, { ok: true });
+          }
+          if (tail === "/uploads" && method === "POST") {
+            need(
+              !(await security.recoveryPending()),
+              503,
+              "Recovery review is required before file transfers",
+            );
+            await tenantAccess(user, tenant, true);
+            need(
+              ready,
+              503,
+              "Storage activation requires completed operator review",
+            );
+            const b = await body(req);
+            need(
+              typeof b.name === "string" &&
+                b.name.length > 0 &&
+                b.name.length <= 200 &&
+                !/[\x00-\x1f/\\]/.test(b.name),
+              400,
+              "Invalid file name",
+            );
+            need(
+              typeof b.folder === "string" &&
+                b.folder.length <= 200 &&
+                !/[\x00-\x1f]/.test(b.folder),
+              400,
+              "Invalid folder",
+            );
+            need(
+              Number.isSafeInteger(b.size) && b.size > 0 && b.size <= MAX,
+              400,
+              "File exceeds the current upload size limit shown in your plan",
+            );
+            need(
+              !b.requestId || /^[a-f0-9-]{36}$/.test(b.requestId),
+              400,
+              "Invalid request identifier",
+            );
+            const fid = id(),
+              key = `tenants/${tenant}/objects/${fid}`,
+              storageTenant = await workspaceStorage.location(tenant),
+              storage = await workspaceStorage.forFile({
+                tenant,
+                storage_tenant: storageTenant,
+              });
+            if (b.browser && storage.transport === "direct")
+              await workspaceStorage.prepareBrowser(tenant);
+            const previous = await db.transaction(async () => {
+              await db.lock("tenant:" + tenant);
+              if (b.requestId) {
+                const p = await one(
+                  "SELECT * FROM files WHERE tenant=? AND requestid=?",
+                  tenant,
+                  b.requestId,
+                );
+                if (p) {
+                  need(
+                    p.name === b.name &&
+                      p.size === b.size &&
+                      p.folder === b.folder,
+                    409,
+                    "Request identifier already used",
+                  );
+                  need(
+                    p.upload,
+                    409,
+                    "Upload is still preparing; retry shortly",
+                  );
+                  return p;
+                }
+              }
+              need(
+                (await workspaceStorage.location(tenant)) === storageTenant,
+                409,
+                "Storage assignment changed; retry upload",
+              );
+              need(
+                (await usage(tenant)) + b.size <= t.quota,
+                409,
+                "Workspace storage allowance exceeded",
+              );
+              await run(
+                "INSERT INTO files(id,tenant,name,folder,size,key,status,created,requestid,storage_tenant) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                fid,
+                tenant,
+                b.name,
+                b.folder,
+                b.size,
+                key,
+                "uploading",
+                now(),
+                b.requestId || null,
+                storageTenant,
+              );
+              return null;
+            });
+            if (previous)
+              return send(res, 200, {
+                id: previous.id,
+                transport: storage.transport || "proxy",
                 partSize: PART,
-                parts: await q(
-                  "SELECT number,size FROM parts WHERE file=?",
+                parts: Math.ceil(previous.size / PART),
+              });
+            try {
+              const upload = await storage.start(key);
+              await run("UPDATE files SET upload=? WHERE id=?", upload, fid);
+            } catch (e) {
+              await run("DELETE FROM files WHERE id=?", fid);
+              throw e;
+            }
+            await audit(tenant, user.email, "Upload started", fid);
+            return send(res, 201, {
+              id: fid,
+              transport: storage.transport || "proxy",
+              partSize: PART,
+              parts: Math.ceil(b.size / PART),
+            });
+          }
+          const directPart =
+            /^\/uploads\/([^/]+)\/parts\/(\d+)\/(sign|ack)$/.exec(tail);
+          if (directPart && method === "POST") {
+            await tenantAccess(user, tenant, true);
+            need(ready, 503, "Storage not activated");
+            const input = await body(req);
+            const value = await db.transaction(async () => {
+              await db.lock("file:" + directPart[1]);
+              await tenantAccess(user, tenant, true);
+              const file = await one(
+                "SELECT * FROM files WHERE id=? AND tenant=?",
+                directPart[1],
+                tenant,
+              );
+              need(file, 404, "Upload not found");
+              return await directTransfers.part(
+                file,
+                Number(directPart[2]),
+                directPart[3],
+                input,
+              );
+            });
+            return send(res, 200, value);
+          }
+          const ur =
+            /^\/uploads\/([^/]+)(?:\/(parts)(?:\/(\d+))?|\/(complete))?$/.exec(
+              tail,
+            );
+          if (ur) {
+            await tenantAccess(user, tenant, true);
+            need(ready, 503, "Storage not activated");
+            const content =
+              method === "PUT" && ur[2] ? await body(req, PART, true) : null;
+            if (content) await mspConsole.recordUpload(tenant, content.length);
+            if (content) {
+              const checksum = req.headers["x-content-sha256"];
+              need(
+                typeof checksum === "string" &&
+                  /^[a-f0-9]{64}$/.test(checksum) &&
+                  hash(content) === checksum,
+                400,
+                "Transfer checksum mismatch",
+              );
+            }
+            const result = await db.transaction(async () => {
+              await db.lock("file:" + ur[1]);
+              await tenantAccess(user, tenant, true);
+              const f = await one(
+                "SELECT * FROM files WHERE id=? AND tenant=?",
+                ur[1],
+                tenant,
+              );
+              need(f, 404, "Upload not found");
+              if (method === "GET")
+                return {
+                  value: {
+                    id: f.id,
+                    name: f.name,
+                    size: f.size,
+                    status: f.status,
+                    transport:
+                      (await workspaceStorage.forFile(f)).transport || "proxy",
+                    partSize: PART,
+                    parts: await q(
+                      "SELECT number,size FROM parts WHERE file=?",
+                      f.id,
+                    ),
+                  },
+                };
+              if (method === "POST" && ur[4] && f.status === "ready")
+                return { value: publicFile(f) };
+              if (method === "PUT" && ur[2]) {
+                need(f.status === "uploading", 409, "Upload is completing");
+                const n = Number(ur[3]),
+                  count = Math.ceil(f.size / PART);
+                need(n >= 1 && n <= count, 400, "Invalid part number");
+                const expected = n === count ? f.size - (n - 1) * PART : PART;
+                need(content.length === expected, 400, "Part length mismatch");
+                const storage = await workspaceStorage.forFile(f),
+                  etag = await storage.part(f.key, f.upload, n, content);
+                await run(
+                  "INSERT INTO parts VALUES(?,?,?,?) ON CONFLICT(file,number) DO UPDATE SET etag=excluded.etag,size=excluded.size",
                   f.id,
-                ),
-              },
-            };
-          if (method === "POST" && ur[4] && f.status === "ready")
-            return { value: publicFile(f) };
-          if (method === "PUT" && ur[2]) {
-            need(f.status === "uploading", 409, "Upload is completing");
-            const n = Number(ur[3]),
-              count = Math.ceil(f.size / PART);
-            need(n >= 1 && n <= count, 400, "Invalid part number");
-            const expected = n === count ? f.size - (n - 1) * PART : PART;
-            need(content.length === expected, 400, "Part length mismatch");
-            const storage = await workspaceStorage.forFile(f),
-              etag = await storage.part(f.key, f.upload, n, content);
-            await run(
-              "INSERT INTO parts VALUES(?,?,?,?) ON CONFLICT(file,number) DO UPDATE SET etag=excluded.etag,size=excluded.size",
-              f.id,
-              n,
-              etag,
-              content.length,
-            );
-            return { value: { number: n, received: content.length } };
-          }
-          if (method === "POST" && ur[4]) {
-            need(
-              f.status === "uploading",
-              409,
-              "Completion already in progress; contact support if interrupted",
-            );
-            const parts = await q(
-              "SELECT number,etag,size FROM parts WHERE file=? ORDER BY number",
-              f.id,
-            );
-            need(
-              parts.length === Math.ceil(f.size / PART) &&
-                parts.reduce((a, p) => a + p.size, 0) === f.size,
-              409,
-              "Upload is incomplete",
-            );
-            await directTransfers.verify(f, parts);
-            await run("UPDATE files SET status='finishing' WHERE id=?", f.id);
-            return { finish: true, file: f, parts };
-          }
-          if (method === "DELETE") {
-            need(
-              ["uploading", "canceling"].includes(f.status),
-              409,
-              "Completion in progress",
-            );
-            await run("UPDATE files SET status='canceling' WHERE id=?", f.id);
-            return { cancel: true, file: f };
-          }
-          throw error(405, "Unsupported upload operation");
-        });
-        if (result.finish) {
-          const f = result.file,
-            storage = await workspaceStorage.forFile(f),
-            version = await storage.complete(f.key, f.upload, result.parts),
-            info = await storage.head(f.key, version);
-          need(
-            info.size === f.size,
-            502,
-            "Stored file size verification failed",
-          );
-          await run(
-            "UPDATE files SET status='ready',version=? WHERE id=? AND status='finishing'",
-            version,
-            f.id,
-          );
-          await audit(
-            tenant,
-            user.email,
-            "Upload completed and size verified",
-            f.id,
-          );
-          return send(res, 200, publicFile({ ...f, status: "ready" }));
-        }
-        if (result.cancel) {
-          const f = result.file;
-          await (await workspaceStorage.forFile(f)).abort(f.key, f.upload);
-          await db.transaction(async () => {
-            await db.lock("file:" + f.id);
-            await run("DELETE FROM upload_part_grants WHERE file=?", f.id);
-            await run("DELETE FROM parts WHERE file=?", f.id);
-            await run(
-              "DELETE FROM files WHERE id=? AND status='canceling'",
-              f.id,
-            );
-            await audit(tenant, user.email, "Upload canceled", f.id);
-          });
-          return send(res, 200, { ok: true });
-        }
-        return send(res, 200, result.value);
-      }
-      const fr =
-        /^\/files\/([^/]+)(?:\/(download|download-link|restore))?$/.exec(tail);
-      if (fr) {
-        need(t.role !== "uploader");
-        const f = await one(
-          "SELECT * FROM files WHERE id=? AND tenant=?",
-          fr[1],
-          tenant,
-        );
-        need(f, 404, "File not found");
-        if (method === "POST" && fr[2] === "download-link") {
-          need(f.status === "ready", 404);
-          need(ready, 503, "Storage not activated");
-          return send(res, 200, await directTransfers.download(f, user.email));
-        }
-        if (method === "GET" && fr[2] === "download") {
-          need(f.status === "ready", 404);
-          need(ready, 503, "Storage not activated");
-          const adapter = await workspaceStorage.forFile(f);
-          if (adapter.transport === "direct") {
-            const link = await directTransfers.download(f, user.email);
-            res.writeHead(302, { Location: link.url });
-            res.end();
-            return;
-          }
-          const range = req.headers.range;
-          need(
-            !range || /^bytes=\d+-\d*$/.test(range),
-            416,
-            "Unsupported range",
-          );
-          const match = range ? /^bytes=(\d+)-(\d*)$/.exec(range) : null,
-            start = match ? Number(match[1]) : 0,
-            end =
-              match && match[2]
-                ? Math.min(Number(match[2]), f.size - 1)
-                : f.size - 1;
-          need(
-            start >= 0 && start < f.size && end >= start,
-            416,
-            "Unsupported range",
-          );
-          const transfer = await mspConsole.reserveDownload(
-            tenant,
-            end - start + 1,
-          );
-          let streamed = 0,
-            success = false;
-          try {
-            const result = await (
-              await workspaceStorage.forFile(f)
-            ).get(f.key, f.version, range);
-            await audit(tenant, user.email, "Download authorized", f.id);
-            res.writeHead(range ? 206 : 200, {
-              "Content-Type": "application/octet-stream",
-              "Content-Disposition": `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(f.name).replace(/'/g, "%27")}`,
-              "Content-Length": result.length,
-              "Accept-Ranges": "bytes",
-              ...(result.range ? { "Content-Range": result.range } : {}),
+                  n,
+                  etag,
+                  content.length,
+                );
+                return { value: { number: n, received: content.length } };
+              }
+              if (method === "POST" && ur[4]) {
+                need(
+                  f.status === "uploading",
+                  409,
+                  "Completion already in progress; contact support if interrupted",
+                );
+                const parts = await q(
+                  "SELECT number,etag,size FROM parts WHERE file=? ORDER BY number",
+                  f.id,
+                );
+                need(
+                  parts.length === Math.ceil(f.size / PART) &&
+                    parts.reduce((a, p) => a + p.size, 0) === f.size,
+                  409,
+                  "Upload is incomplete",
+                );
+                await directTransfers.verify(f, parts);
+                await run(
+                  "UPDATE files SET status='finishing' WHERE id=?",
+                  f.id,
+                );
+                return { finish: true, file: f, parts };
+              }
+              if (method === "DELETE") {
+                need(
+                  ["uploading", "canceling"].includes(f.status),
+                  409,
+                  "Completion in progress",
+                );
+                await run(
+                  "UPDATE files SET status='canceling' WHERE id=?",
+                  f.id,
+                );
+                return { cancel: true, file: f };
+              }
+              throw error(405, "Unsupported upload operation");
             });
-            const meter = new Transform({
-              transform(chunk, encoding, done) {
-                streamed += chunk.length;
-                done(null, chunk);
-              },
-            });
-            await pipeline(result.body, meter, res);
-            success = true;
-          } finally {
-            await mspConsole.finishDownload(transfer, streamed, success);
+            if (result.finish) {
+              const f = result.file,
+                storage = await workspaceStorage.forFile(f),
+                version = await storage.complete(f.key, f.upload, result.parts),
+                info = await storage.head(f.key, version);
+              need(
+                info.size === f.size,
+                502,
+                "Stored file size verification failed",
+              );
+              await run(
+                "UPDATE files SET status='ready',version=? WHERE id=? AND status='finishing'",
+                version,
+                f.id,
+              );
+              await audit(
+                tenant,
+                user.email,
+                "Upload completed and size verified",
+                f.id,
+              );
+              return send(res, 200, publicFile({ ...f, status: "ready" }));
+            }
+            if (result.cancel) {
+              const f = result.file;
+              await (await workspaceStorage.forFile(f)).abort(f.key, f.upload);
+              await db.transaction(async () => {
+                await db.lock("file:" + f.id);
+                await run("DELETE FROM upload_part_grants WHERE file=?", f.id);
+                await run("DELETE FROM parts WHERE file=?", f.id);
+                await run(
+                  "DELETE FROM files WHERE id=? AND status='canceling'",
+                  f.id,
+                );
+                await audit(tenant, user.email, "Upload canceled", f.id);
+              });
+              return send(res, 200, { ok: true });
+            }
+            return send(res, 200, result.value);
           }
+          const fr =
+            /^\/files\/([^/]+)(?:\/(download|download-link|restore))?$/.exec(
+              tail,
+            );
+          if (fr) {
+            need(t.role !== "uploader");
+            const f = await one(
+              "SELECT * FROM files WHERE id=? AND tenant=?",
+              fr[1],
+              tenant,
+            );
+            need(f, 404, "File not found");
+            if (method === "POST" && fr[2] === "download-link") {
+              need(
+                !(await security.recoveryPending()),
+                503,
+                "Recovery review is required before file transfers",
+              );
+              need(f.status === "ready", 404);
+              need(ready, 503, "Storage not activated");
+              return send(
+                res,
+                200,
+                await directTransfers.download(f, user.email),
+              );
+            }
+            if (method === "GET" && fr[2] === "download") {
+              need(
+                !(await security.recoveryPending()),
+                503,
+                "Recovery review is required before file transfers",
+              );
+              need(f.status === "ready", 404);
+              need(ready, 503, "Storage not activated");
+              const adapter = await workspaceStorage.forFile(f);
+              if (adapter.transport === "direct") {
+                const link = await directTransfers.download(f, user.email);
+                res.writeHead(302, { Location: link.url });
+                res.end();
+                return;
+              }
+              const range = req.headers.range;
+              need(
+                !range || /^bytes=\d+-\d*$/.test(range),
+                416,
+                "Unsupported range",
+              );
+              const match = range ? /^bytes=(\d+)-(\d*)$/.exec(range) : null,
+                start = match ? Number(match[1]) : 0,
+                end =
+                  match && match[2]
+                    ? Math.min(Number(match[2]), f.size - 1)
+                    : f.size - 1;
+              need(
+                start >= 0 && start < f.size && end >= start,
+                416,
+                "Unsupported range",
+              );
+              const transfer = await mspConsole.reserveDownload(
+                tenant,
+                end - start + 1,
+              );
+              let streamed = 0,
+                success = false;
+              try {
+                const result = await (
+                  await workspaceStorage.forFile(f)
+                ).get(f.key, f.version, range);
+                await audit(tenant, user.email, "Download authorized", f.id);
+                res.writeHead(range ? 206 : 200, {
+                  "Content-Type": "application/octet-stream",
+                  "Content-Disposition": `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(f.name).replace(/'/g, "%27")}`,
+                  "Content-Length": result.length,
+                  "Accept-Ranges": "bytes",
+                  ...(result.range ? { "Content-Range": result.range } : {}),
+                });
+                const meter = new Transform({
+                  transform(chunk, encoding, done) {
+                    streamed += chunk.length;
+                    done(null, chunk);
+                  },
+                });
+                await pipeline(result.body, meter, res);
+                success = true;
+              } finally {
+                await mspConsole.finishDownload(transfer, streamed, success);
+              }
 
+              return;
+            }
+            if (method === "PATCH") {
+              await tenantAccess(user, tenant, true);
+              need(f.status === "ready", 409);
+              const b = await body(req);
+              need(
+                typeof b.name === "string" &&
+                  b.name.length > 0 &&
+                  b.name.length <= 200 &&
+                  !/[\x00-\x1f/\\]/.test(b.name),
+                400,
+                "Invalid file name",
+              );
+              await run("UPDATE files SET name=? WHERE id=?", b.name, f.id);
+              await audit(tenant, user.email, "File renamed", f.id);
+              return send(res, 200, { ok: true });
+            }
+            if (method === "DELETE") {
+              await tenantAccess(user, tenant, true);
+              need(f.status === "ready", 409);
+              await run("UPDATE files SET status='trash' WHERE id=?", f.id);
+              await audit(tenant, user.email, "File moved to trash", f.id);
+              return send(res, 200, { ok: true });
+            }
+            if (method === "POST" && fr[2] === "restore") {
+              await tenantAccess(user, tenant, true);
+              need(f.status === "trash", 409);
+              await run("UPDATE files SET status='ready' WHERE id=?", f.id);
+              await audit(tenant, user.email, "File restored", f.id);
+              return send(res, 200, { ok: true });
+            }
+          }
+          throw error(404, "Not found");
+        }
+        need(method === "GET" || method === "HEAD", 405);
+        const file = path === "/" ? "index.html" : path.slice(1);
+        need(
+          [
+            "index.html",
+            "app.js",
+            "style.css",
+            "demo.js",
+            "clerk-client.js",
+            "spark-md5.min.js",
+            "favicon.svg",
+            "favicon.ico",
+          ].includes(file),
+          404,
+          "Not found",
+        );
+        const contents = readFileSync(resolve("dist", file));
+        res.writeHead(200, {
+          "Content-Type": {
+            ".html": "text/html; charset=utf-8",
+            ".js": "text/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".ico": "image/x-icon",
+          }[extname(file)],
+        });
+        res.end(contents);
+      } catch (e) {
+        if (res.headersSent) {
+          try {
+            await securityLog.event("request_failed", {
+              ...context,
+              status: 502,
+              severity: "high",
+            });
+          } catch {
+            console.error(
+              JSON.stringify({
+                event: "security_log_unavailable",
+                requestId: context.requestId,
+              }),
+            );
+          }
+          res.destroy();
           return;
         }
-        if (method === "PATCH") {
-          await tenantAccess(user, tenant, true);
-          need(f.status === "ready", 409);
-          const b = await body(req);
-          need(
-            typeof b.name === "string" &&
-              b.name.length > 0 &&
-              b.name.length <= 200 &&
-              !/[\x00-\x1f/\\]/.test(b.name),
-            400,
-            "Invalid file name",
+        const status = e.status || 500;
+        try {
+          await securityLog.event(
+            status === 401
+              ? "authentication_failed"
+              : status >= 500
+                ? "request_failed"
+                : "request_denied",
+            {
+              ...context,
+              status,
+              severity: status >= 500 ? "high" : "warning",
+            },
           );
-          await run("UPDATE files SET name=? WHERE id=?", b.name, f.id);
-          await audit(tenant, user.email, "File renamed", f.id);
-          return send(res, 200, { ok: true });
+        } catch {
+          console.error(
+            JSON.stringify({
+              event: "security_log_unavailable",
+              requestId: context.requestId,
+            }),
+          );
         }
-        if (method === "DELETE") {
-          await tenantAccess(user, tenant, true);
-          need(f.status === "ready", 409);
-          await run("UPDATE files SET status='trash' WHERE id=?", f.id);
-          await audit(tenant, user.email, "File moved to trash", f.id);
-          return send(res, 200, { ok: true });
-        }
-        if (method === "POST" && fr[2] === "restore") {
-          await tenantAccess(user, tenant, true);
-          need(f.status === "trash", 409);
-          await run("UPDATE files SET status='ready' WHERE id=?", f.id);
-          await audit(tenant, user.email, "File restored", f.id);
-          return send(res, 200, { ok: true });
-        }
+
+        if (status >= 500)
+          console.error(
+            JSON.stringify({
+              event: "request_failed",
+              code: e.name || "Error",
+              at: now(),
+              requestId: context.requestId,
+            }),
+          );
+        return send(res, status, {
+          error:
+            context.maintenanceAuthenticated &&
+            e.code === "ARCHIVE_CONFIGURATION"
+              ? e.message
+              : status >= 500
+                ? "Service temporarily unavailable. Contact your storage administrator."
+                : e.message,
+          ...(e.code ? { code: e.code } : {}),
+        });
       }
-      throw error(404, "Not found");
-    }
-    need(method === "GET" || method === "HEAD", 405);
-    const file = path === "/" ? "index.html" : path.slice(1);
-    need(
-      [
-        "index.html",
-        "app.js",
-        "style.css",
-        "demo.js",
-        "clerk-client.js",
-        "spark-md5.min.js",
-        "favicon.svg",
-        "favicon.ico",
-      ].includes(file),
-      404,
-      "Not found",
-    );
-    const contents = readFileSync(resolve("dist", file));
-    res.writeHead(200, {
-      "Content-Type": {
-        ".html": "text/html; charset=utf-8",
-        ".js": "text/javascript; charset=utf-8",
-        ".css": "text/css; charset=utf-8",
-        ".svg": "image/svg+xml",
-        ".ico": "image/x-icon",
-      }[extname(file)],
-    });
-    res.end(contents);
-  } catch (e) {
-    if (res.headersSent) {
-      res.destroy();
-      return;
-    }
-    const status = e.status || 500;
-    if (status >= 500)
-      console.error(
-        JSON.stringify({
-          event: "request_failed",
-          code: e.name || "Error",
-          at: now(),
-        }),
-      );
-    send(res, status, {
-      error:
-        status >= 500
-          ? "Service temporarily unavailable. Contact your storage administrator."
-          : e.message,
-      ...(e.code ? { code: e.code } : {}),
-    });
-  }
-});
+    },
+  ),
+);
 const timer = setInterval(() => {
   run("DELETE FROM sessions WHERE expires<?", Date.now()).catch(() =>
     console.error(JSON.stringify({ event: "session_cleanup_failed" })),

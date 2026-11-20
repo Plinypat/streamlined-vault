@@ -35,6 +35,11 @@ const order = [
   "transfer_events",
   "provider_inventory",
   "upload_part_grants",
+  "security_events",
+  "security_state",
+  "security_alerts",
+  "security_checks",
+  "audit_archives",
 ];
 let source, db;
 try {

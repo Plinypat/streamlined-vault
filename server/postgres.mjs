@@ -35,7 +35,7 @@ export function postgresPool(
     ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
   const pool = new pg.Pool({
     connectionString: url.toString(),
-    ssl: local ? false : { rejectUnauthorized: true },
+    ssl: local ? false : { rejectUnauthorized: true, minVersion: "TLSv1.2" },
     enableChannelBinding: true,
     max: 5,
     maxLifetimeSeconds: 300,

@@ -118,7 +118,11 @@ export function createDirectTransfers({
       const link = await storage.signDownload(
         file.key,
         file.version,
-        file.name,
+        "streamlined-vault-" +
+          file.id +
+          ((/\.(dcm|jpg|jpeg|png|tif|tiff|pdf|zip|bin|json|xml|csv|xlsx|docx)$/i.exec(
+            file.name,
+          ) || [])[0] || ".bin"),
       );
       await audit(
         file.tenant,

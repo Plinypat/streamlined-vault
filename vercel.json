@@ -1,0 +1,5 @@
+{
+  "crons": [
+    { "path": "/internal/security-maintenance", "schedule": "*/15 * * * *" }
+  ]
+}

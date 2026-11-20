@@ -8,9 +8,11 @@ import {
   HeadObjectCommand,
   PutObjectCommand,
   ListPartsCommand,
+  DeleteObjectCommand,
+  GetObjectRetentionCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -138,7 +140,7 @@ export class CloudStorage {
         ...(version ? { VersionId: version } : {}),
       }),
     );
-    return { size: r.ContentLength };
+    return { size: r.ContentLength, encryption: r.ServerSideEncryption };
   }
   async abort(key, uploadId) {
     await this.client.send(
@@ -159,6 +161,63 @@ export class CloudStorage {
       }),
     );
     return { body: r.Body, length: r.ContentLength, range: r.ContentRange };
+  }
+  async deniedReadProbe(bucket, key, version) {
+    if (!/^security-canary\/[a-f0-9-]{36}$/.test(key))
+      throw Error("Probe prefix rejected");
+    try {
+      const r = await this.client.send(
+        new GetObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          ...(version ? { VersionId: version } : {}),
+        }),
+      );
+      r.Body?.destroy?.();
+      return false;
+    } catch (e) {
+      return e.$metadata?.httpStatusCode === 403;
+    }
+  }
+  async removeCanary(key, version) {
+    if (!/^security-canary\/[a-f0-9-]{36}$/.test(key))
+      throw Error("Canary cleanup prefix rejected");
+    await this.client.send(
+      new DeleteObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ...(version ? { VersionId: version } : {}),
+      }),
+    );
+  }
+  async putLocked(key, bytes, until) {
+    const r = await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: bytes,
+        ContentLength: bytes.length,
+        ContentMD5: createHash("md5").update(bytes).digest("base64"),
+        ServerSideEncryption: "AES256",
+        ContentType: "application/octet-stream",
+        ObjectLockMode: "COMPLIANCE",
+        ObjectLockRetainUntilDate: new Date(until),
+      }),
+    );
+    return r.VersionId || "";
+  }
+  async retention(key, version) {
+    const r = await this.client.send(
+      new GetObjectRetentionCommand({
+        Bucket: this.bucket,
+        Key: key,
+        VersionId: version,
+      }),
+    );
+    return {
+      mode: r.Retention?.Mode,
+      until: r.Retention?.RetainUntilDate?.toISOString(),
+    };
   }
   async put(key, bytes) {
     await this.client.send(
@@ -181,6 +240,11 @@ export class LocalStorage {
   }
   path(key) {
     return join(this.dir, createHash("sha256").update(key).digest("hex"));
+  }
+  async removeCanary(key) {
+    if (!/^security-canary\/[a-f0-9-]{36}$/.test(key))
+      throw Error("Canary cleanup prefix rejected");
+    await unlink(this.path(key));
   }
   async start(key) {
     await mkdir(this.dir, { recursive: true });

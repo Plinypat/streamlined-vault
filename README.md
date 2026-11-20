@@ -62,7 +62,7 @@ To stop the pilot, stop and unregister its scheduled task and revoke the device 
 - New workspaces support dedicated private buckets with encrypted, bucket-restricted credentials. MSP setup can create a bucket or connect an existing one. Existing workspaces/files keep their shared-bucket location. See docs/DEDICATED-STORAGE.md. Dedicated provisioning on Vercel is enabled only with migrated Postgres metadata and configured encryption/provisioning secrets; this is not a separate provider account per client.
 - The metadata database contains sensitive filenames and account records. Protect it on encrypted persistent storage with backups. SQLite remains a local synthetic-data adapter. Postgres backs live metadata; restoring it and the separate credential-encryption key must be tested together.
 - Trash and pending reservations count toward logical quota. Provider versions/orphans may add billable usage outside that meter. Full billing reconciliation and provider/metadata restore drills are required.
-- Current hash-chained audit records are not immutable or independently anchored. Off-host audit retention/monitoring and tested incident procedures remain production tasks.
+- Activity and security logs now have append-only database protections, resumable chain checks and a separate encrypted 365-day locked archive workflow. Archive activation, runtime role restrictions, external alert delivery and independent recovery acceptance must be verified; see docs/SECURITY-OPERATIONS.md.
 - The current per-file cap is **50 GiB**, using 16 MiB multipart parts. This configured limit is not a claim that a 50 GiB real-provider transfer has passed acceptance. See docs/LARGE-TRANSFERS.md. Browser pause/resume lasts for the page session; the updated uploader persists resume state. Interrupted completion may require administrator reconciliation.
 - No cloud cron task reads local practice folders. Old cloud capacity/inventory automation routes are removed. A background cleanup timer expires local sessions only. Legacy scoped token endpoints remain for the standalone command-line uploader.
 - Legal holds, destructive retention policies, external sharing, database-consistent backups, diagnostic image viewing and practice-software desktops are outside this pilot.
@@ -84,3 +84,5 @@ Execute applicable BAAs with the practice and all relevant providers, complete r
 Operator documentation and the MSP-only pricing reference identify providers accurately. Client screens remain branded; browser assets contain no long-lived secrets. Branding does not conceal providers from someone inspecting source or network traffic.
 
 See [MSP console and service plans](docs/MSP-CONSOLE.md) for private administrator storage, aggregate usage, inventory and client allowances.
+
+Security operations, restricted-role setup and encrypted metadata recovery are documented in [Security operations](docs/SECURITY-OPERATIONS.md).
