@@ -467,5 +467,6 @@ export function createAuditArchive({
     save,
     environment,
     connect,
+    probeAdapter: storage,
   };
 }

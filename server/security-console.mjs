@@ -200,6 +200,8 @@ export function createSecurityConsole({
             tenant: other.tenant,
             storage_tenant: other.tenant,
           });
+        if (!foreign && (await archive.status()).configured)
+          foreign = await archive.probeAdapter();
         await workspaceStorage.prepareBrowser(tenant);
       }
       const transfer = await runStorageCanary(adapter, {
@@ -279,10 +281,15 @@ export function createSecurityConsole({
       if (Number(failures.count) >= 20)
         await log.alert("repeated_authentication_failures", "high");
       if (!demo) {
-        const candidate = await db.one(
+        let candidate = await db.one(
           "SELECT t.id FROM tenants t WHERE t.status='active' AND NOT EXISTS(SELECT 1 FROM security_checks c WHERE c.kind='storage' AND c.tenant=t.id AND c.created>?) ORDER BY t.id LIMIT 1",
           new Date(Date.now() - 86400000).toISOString(),
         );
+        if (!candidate && (await archive.status()).configured)
+          candidate = await db.one(
+            "SELECT t.id FROM tenants t WHERE t.status='active' AND NOT EXISTS(SELECT 1 FROM security_checks c WHERE c.kind='storage' AND c.tenant=t.id AND c.status='passed' AND c.result LIKE ?) ORDER BY t.id LIMIT 1",
+            '%"crossBucketVerified":true%',
+          );
         if (candidate)
           try {
             await storageCheck(candidate.id, actor);

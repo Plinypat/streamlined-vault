@@ -19,7 +19,13 @@ try {
   const source = process.env.DATABASE_MIGRATION_URL;
   if (!source)
     throw Error("An owner connection is required in DATABASE_MIGRATION_URL");
-  db = postgresDatabase(postgresPool(source));
+  db = postgresDatabase(
+    postgresPool(source, {
+      allowLocalTest:
+        process.env.NODE_ENV === "test" &&
+        process.env.TEST_DATABASE_LOCAL === "true",
+    }),
+  );
   const name = "sv_runtime_" + randomBytes(6).toString("hex"),
     password = randomBytes(32).toString("hex");
   const database = (await db.one("SELECT current_database() AS name")).name;
