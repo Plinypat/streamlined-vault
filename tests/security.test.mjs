@@ -135,7 +135,7 @@ before(async () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
         ).version,
-        4,
+        5,
       );
       await migratePostgres(upgrade); // Repeat cold starts must leave data intact.
       await upgrade.run("DELETE FROM tenants WHERE id='upgrade-fixture'");
@@ -1454,4 +1454,45 @@ test("MSP security operations are isolated, denial logs are durable and maintena
       await pool.end();
     }
   }
+});
+
+test("recovery endpoints require MSP membership, CSRF and cron authorization; evidence cannot silently activate production", async () => {
+  for (const endpoint of ["backup", "evidence", "test-notification"]) {
+    assert.equal(
+      (await request("/api/msp/security/" + endpoint, "POST", {})).status,
+      401,
+    );
+    assert.equal(
+      (await request("/api/msp/security/" + endpoint, "POST", {}, client))
+        .status,
+      403,
+    );
+    assert.equal(
+      (
+        await request("/api/msp/security/" + endpoint, "POST", {}, admin, {
+          "X-CSRF-Token": "wrong",
+        })
+      ).status,
+      403,
+    );
+  }
+  assert.equal((await request("/internal/metadata-backup")).status, 401);
+  const activation = await request(
+    "/api/msp/security/evidence",
+    "POST",
+    { kind: "activation_review", reference: "test-evidence" },
+    admin,
+  );
+  assert.equal(activation.status, 409);
+  const review = await request(
+    "/api/msp/security/evidence",
+    "POST",
+    { kind: "mfa_review", reference: "synthetic-test-evidence" },
+    admin,
+  );
+  assert.equal(review.status, 200);
+  const status = await request("/api/msp/security", "GET", undefined, admin);
+  assert.equal(status.value.technicalApproval, false);
+  assert.equal(status.value.backups.configured, false);
+  assert.ok(!JSON.stringify(status.value).includes("wrappedKey"));
 });

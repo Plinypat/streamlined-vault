@@ -445,6 +445,7 @@ const server = http.createServer((req, res) =>
         need(l.n < 1800, 429, "Too many requests; retry shortly");
         if (
           [
+            "/internal/metadata-backup",
             "/internal/security-maintenance",
             "/internal/security-status",
             "/internal/security-archive-connect",
@@ -468,6 +469,10 @@ const server = http.createServer((req, res) =>
           if (path === "/internal/security-status" && method === "GET") {
             const state = await security.status();
             return send(res, 200, {
+              backups: state.backups,
+              notifications: state.notifications,
+              technicalApproval: state.technicalApproval,
+              gates: state.gates,
               archive: state.archive,
               maintenance: state.maintenance,
               checks: state.checks.slice(0, 12),
@@ -489,6 +494,18 @@ const server = http.createServer((req, res) =>
             );
             return send(res, 200, value);
           }
+          if (path === "/internal/metadata-backup" && method === "GET")
+            return send(
+              res,
+              200,
+              await security.backups.run({
+                scheduled:
+                  req.headers["x-vercel-cron-schedule"] === "7 * * * *" &&
+                  String(req.headers["user-agent"] || "").startsWith(
+                    "vercel-cron/",
+                  ),
+              }),
+            );
           need(
             path === "/internal/security-maintenance" && method === "GET",
             405,
@@ -578,6 +595,31 @@ const server = http.createServer((req, res) =>
             need(user.msp);
             if (path === "/api/msp/security" && method === "GET")
               return send(res, 200, await security.status());
+            if (path === "/api/msp/security/backup" && method === "POST") {
+              await audit(
+                "msp",
+                user.email,
+                "Manual metadata backup requested",
+              );
+              return send(res, 200, await security.backups.run());
+            }
+            if (path === "/api/msp/security/evidence" && method === "POST")
+              return send(
+                res,
+                200,
+                await security.recordEvidence(user.email, await body(req)),
+              );
+            if (
+              path === "/api/msp/security/test-notification" &&
+              method === "POST"
+            ) {
+              await run(
+                "UPDATE security_alerts SET status='resolved' WHERE code='notification_test'",
+              );
+              await securityLog.alert("notification_test", "info");
+              await audit("msp", user.email, "Notification test requested");
+              return send(res, 200, await security.notifications.drain());
+            }
             if (path === "/api/msp/security/maintenance" && method === "POST")
               return send(res, 200, await security.maintenance(user.email));
             if (
@@ -626,6 +668,9 @@ const server = http.createServer((req, res) =>
               (await accessible(user)).map(async (t) => ({
                 ...t,
                 storage: await workspaceStorage.view(t.id, user.msp),
+                browserTransfers: user.msp
+                  ? await security.browserStatus(t.id)
+                  : undefined,
                 plan: await mspConsole.plan(t.id),
                 used: await usage(t.id),
                 role: user.msp
@@ -843,6 +888,7 @@ const server = http.createServer((req, res) =>
           if (tail === "/storage/browser-transfers" && method === "POST") {
             need(user.msp);
             await workspaceStorage.prepareBrowser(tenant);
+            await security.recordBrowser(tenant);
             await audit(
               tenant,
               user.email,

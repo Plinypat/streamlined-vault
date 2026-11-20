@@ -1,5 +1,12 @@
 {
   "crons": [
-    { "path": "/internal/security-maintenance", "schedule": "*/15 * * * *" }
+    {
+      "path": "/internal/security-maintenance",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/internal/metadata-backup",
+      "schedule": "7 * * * *"
+    }
   ]
 }

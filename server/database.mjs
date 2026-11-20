@@ -31,6 +31,9 @@ const tables = [
   "security_alerts",
   "security_checks",
   "audit_archives",
+  "backup_history",
+  "alert_deliveries",
+  "readiness_evidence",
 ];
 export function postgresSql(sql) {
   let n = 0;
@@ -191,6 +194,7 @@ const migrations = [
   { version: 2, file: "002-msp-console.sql" },
   { version: 3, file: "003-direct-transfers.sql" },
   { version: 4, file: "004-security.sql" },
+  { version: 5, file: "005-recovery-operations.sql" },
 ];
 export async function migratePostgres(db) {
   try {
@@ -279,6 +283,15 @@ export async function openDatabase({ env, demo, data }) {
       .replaceAll("seq BIGSERIAL UNIQUE NOT NULL", "seq INTEGER");
     await db.exec(
       securitySql
+        .replaceAll("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
+        .replaceAll("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS "),
+    );
+    await db.exec(
+      readFileSync(
+        new URL("./migrations/005-recovery-operations.sql", import.meta.url),
+        "utf8",
+      )
+        .replaceAll("streamlined_vault.", "")
         .replaceAll("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
         .replaceAll("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS "),
     );

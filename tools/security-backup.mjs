@@ -77,7 +77,9 @@ try {
       throw Error("Restore target must differ from the source database");
     const payload = decryptBackup(
       readFileSync(resolve(file)),
-      process.env.RECOVERY_BACKUP_KEY,
+      process.env.RECOVERY_PRIVATE_KEY_FILE
+        ? readFileSync(resolve(process.env.RECOVERY_PRIVATE_KEY_FILE), "utf8")
+        : process.env.RECOVERY_BACKUP_KEY,
     );
     const keyPath = resolve(value("--key-output"));
     if (existsSync(keyPath)) throw Error("Recovered key output already exists");

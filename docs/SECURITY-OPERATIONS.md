@@ -53,3 +53,67 @@ The synthetic local Postgres drill on November 20 restored 23 metadata tables an
 ## Remaining independent acceptance
 
 Verify the production restricted runtime role, archive permissions/retention, scheduled-run success, recovery-key custody, encrypted off-host metadata backup and actual isolated production-metadata recovery. Test production MFA enrollment/recovery/revocation and representative practice files. The 50 GiB configured ceiling is not a tested throughput commitment. Endpoint encryption, source consistency, manufacturer-approved imaging exports, external monitoring and recovery ownership require separate operational acceptance. Contract/review gates are not bypassed by the security job.
+
+# Managed recovery and production acceptance
+
+## Deployed architecture
+
+Hourly metadata backups run at minute 7 UTC through `/internal/metadata-backup`. The existing security job remains every 15 minutes. Both use `CRON_SECRET`; manual requests do not count as scheduled execution or send successful schedule heartbeats. A database lease excludes concurrent backup jobs. The production database owner is never required by either runtime job.
+
+A separate `sv-recovery-*` private bucket holds only encrypted metadata bundles. Its lifecycle hides `metadata/` objects after 30 days and deletes hidden versions after another day; provider lifecycle processing is asynchronous, so physical deletion is not an exact 30-day deadline. The writer has read/write access to that bucket and no deletion or management permissions. Client file buckets and the 365-day locked audit bucket are unchanged. Recovery backups have no Object Lock.
+
+New SVB2 bundles use an independent AES-256-GCM data key for each snapshot and RSA-OAEP-SHA256 wrapping with a 3072-bit recovery public key. Only the public key is stored in the portal. The private PEM key must remain outside Vercel, in the business password manager with MFA and documented emergency access. Do not paste it into a chat or place it in the recovery bucket. SVB1 bundles still require their original independent symmetric recovery key.
+
+Each backup takes a repeatable-read snapshot, verifies existing credential decryption, enforces the 64 MiB plaintext limit, and warns at 48 MiB. Each uploaded bundle is downloaded again and checked for matching hash, size, manifest, and AES-256 storage encryption. Once daily a retained prior bundle is also read back. These cloud checks verify ciphertext integrity; only an isolated offline restore with the private key verifies decryption. No plaintext backup is uploaded.
+
+Operational histories, notification queues, and readiness approvals are deliberately not restored from bundles; immutable log chains and the original 23 metadata tables are preserved. The recovery-review marker blocks normal file access, and restored device credentials are revoked. Backup jobs also refuse to run in a recovered environment pending review.
+
+## Required live notification settings
+
+Add these server-only settings to Vercel Production, then redeploy:
+
+- `RESEND_API_KEY`: restricted sending API key from Resend.
+- `ALERT_EMAIL_FROM`: `Streamlined Vault <alerts@streamlinedvault.com>` after verifying the sending domain in Resend with its exact DNS records.
+- `ALERT_EMAIL_TO`: `patrick@streamlinedconsulting.online`.
+- `HEALTHCHECKS_MAINTENANCE_URL`: a dedicated UUID ping URL. Set interval 15 minutes, grace 15 minutes.
+- `HEALTHCHECKS_BACKUP_URL`: a different UUID ping URL. Set interval 60 minutes, grace 15 minutes.
+
+In Healthchecks.io, enable and verify its own email notification integration to the same business address. Send no logs or request bodies. Ping URLs are secrets, never browser configuration. The portal accepts only HTTPS UUID URLs on `hc-ping.com` and forbids redirects.
+
+For independent public availability monitoring, add `HEALTHCHECKS_PORTAL_URL` as a GitHub Actions repository secret. Use a third Healthchecks check, interval 15 minutes and grace 15 minutes. `.github/workflows/availability.yml` runs independently of Vercel and checks both the homepage and `/health`. GitHub schedules can be delayed; this is operational monitoring, not an uptime SLA. Enable scheduled Actions on the repository and test with workflow_dispatch.
+
+The durable outbox sends bounded category/severity/time/incident identifiers and the portal link; never raw alert codes containing device IDs, filenames, patient names, or logs. Existing open incidents are queued when delivery is configured. Open incidents are deduplicated; acknowledgment followed by recurrence queues a new notification. Delivery attempts use a stable Resend idempotency key, retry up to five times, then show failed. Pending messages older than 23 hours require operator review to avoid retrying beyond the provider idempotency window. Provider acceptance is labeled accepted, not delivered. Confirm actual inbox receipt separately.
+
+## Initial setup and repeatable restore
+
+`tools/provision-metadata-recovery.mjs` requires the owner migration connection, stable credential-encryption key, existing restricted runtime connection (`RUNTIME_DATABASE_URL`), authenticated B2 CLI, verified production account fingerprint, HTTPS origin, and `--confirm-30-day-recovery`. It creates only the recovery bucket, scoped writer and recovery key pair, records encrypted writer credentials, applies migration 5, and grants the existing restricted role access to the three operational tables. It never enables Object Lock. Keys are written as protected local `.env.recovery-private.pem` and `.env.recovery-public.pem`; keep the private key outside Git and move custody to the password manager after verifying its stored copy. Existing setup is reused, not silently rekeyed.
+
+Monthly restore procedure:
+
+1. Select a verified backup from the dedicated recovery bucket. Download to a protected operator location and compare its recorded SHA-256 before decrypting.
+2. Export the private PEM from the password manager to a temporary protected operator file. Never put it into the application runtime.
+3. Create a new isolated, empty database. Set protected `RESTORE_DATABASE_URL`, the distinct source `DATABASE_URL`, and `RECOVERY_PRIVATE_KEY_FILE`.
+4. Run `node --env-file=<protected-environment> tools/security-backup.mjs restore --file <downloaded.svbackup> --confirm-isolated-target --key-output <new-protected-key.env>`.
+5. Verify complete audit/security log chains from the beginning; confirm workspace credential decryption, original file/bucket bindings, empty sessions/enrollments, all device credentials revoked, and the recovery-review marker. Download representative test files and compare them with their known source checksums.
+6. Record duration, backup identifier, results, and exclusions in the acceptance evidence. Keep the isolated environment blocked and separate from production. Remove temporary private-key exports only after password-manager recovery was tested.
+
+The automated backup target is no more than one hour of metadata loss during normal scheduling. A delayed or failed backup raises an operational alert; this is not a guarantee. The four-hour recovery target covers portal recovery, not downloading all imaging data. Independent operator and provider access are prerequisites.
+
+## Acceptance checklist
+
+Use MSP console > Security & logs > Record acceptance evidence only for completed checks. References must be short, non-sensitive ticket or evidence identifiers. Reviews expire after 30 days. Technical approval requires current checks plus an explicit activation review; provider review flags remain separate and are never changed by this feature.
+
+- **Key custody:** export the private key from the actual business password manager and repeat decryption. Record emergency access ownership and an independent secured recovery copy.
+- **MFA:** use a dedicated Clerk test identity, never the only administrator. Test enrollment, absent and stale second factors, account recovery, session revocation and removed-member denial. Preserve owner access.
+- **Access:** verify viewer/uploader/editor/admin behavior and cross-practice list/upload/download/admin denial.
+- **Notifications:** send a dashboard test, verify actual business inbox receipt, simulate a failed delivery and confirm visible retry/failure status, then verify incident recovery email.
+- **Monitoring:** deliberately pause a disposable test check to verify missing-job email, and test failure and recovery signals. Confirm the actual scheduled jobs are sending separate signals. Test public availability workflow dispatch. Do not spoof production cron headers to claim scheduler evidence.
+- **Credentials:** review previously exposed secrets and complete necessary rotation without changing the stable storage encryption key without a migration.
+- **Endpoint:** confirm disk encryption, patched Windows, protected uploader folders and manufacturer-approved imaging export method. Live application database files are not assumed to be safe file-copy sources.
+- **Pilot:** use Sorski's designated local non-patient folder; enroll its actual Windows computer with a one-time credential. New uploader defaults are every day at 21:00 using the computer's local time. The computer must be awake/online. Observe two successful scheduled nights, then test a changed file, interrupted/resumed transfer, restart, quota rejection, revoke/re-enroll, and checksum-verified downloads. Never delete source or client cloud files as part of the pilot.
+
+New internal API: GET `/internal/metadata-backup` (cron-secret authentication). New MSP-only API: POST `/api/msp/security/backup`, `/test-notification`, `/evidence` under the same prefix. Existing MFA/origin/CSRF protections apply. Security status includes backups, notification attempts and readiness evidence without keys or bundle contents.
+
+## November 20 live evidence update
+
+The production runtime database role was verified restricted with certificate-verified TLS 1.3. A real SVB2 off-site backup was written and read back from a dedicated private recovery bucket, then decrypted and restored into an isolated Neon database. Both complete log chains and workspace credentials verified. The metadata restore contained one practice and zero file records and took approximately 20 seconds including backup creation. This proves metadata recovery only; password-manager key custody, inbox delivery, independent monitor notifications, live MFA recovery and the two-night practice pilot remain unverified until completed by the operator.

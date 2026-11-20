@@ -66,16 +66,42 @@ export function createSecurityLog({
   clock = () => new Date().toISOString(),
 }) {
   async function alert(code, severity = "high") {
-    const now = clock();
-    await db.run(
-      "INSERT INTO security_alerts(id,code,severity,first_seen,last_seen) VALUES(?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET last_seen=excluded.last_seen,occurrences=security_alerts.occurrences+1,status='open',acknowledged_by=NULL,acknowledged_at=NULL",
-      randomUUID(),
-      safeId(code) || "security_failure",
-      severity,
-      now,
-      now,
-    );
+    return db.transaction(async () => {
+      await db.lock("security:alert:" + code);
+      const now = clock(),
+        normalized = safeId(code) || "security_failure";
+      const existing = await db.one(
+        "SELECT * FROM security_alerts WHERE code=?",
+        normalized,
+      );
+      const id = existing?.id || randomUUID();
+      await db.run(
+        "INSERT INTO security_alerts(id,code,severity,first_seen,last_seen) VALUES(?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET last_seen=excluded.last_seen,occurrences=security_alerts.occurrences+1,status='open',acknowledged_by=NULL,acknowledged_at=NULL",
+        id,
+        normalized,
+        severity,
+        now,
+        now,
+      );
+      if (!existing || existing.status !== "open") {
+        const generation = randomUUID();
+        await db.run(
+          "INSERT INTO alert_deliveries(id,alert_id,generation,category,severity,status,next_attempt,created) VALUES(?,?,?,?,?,'pending',?,?)",
+          randomUUID(),
+          id,
+          generation,
+          normalized,
+          ["high", "critical", "warning", "info"].includes(severity)
+            ? severity
+            : "high",
+          Date.now(),
+          now,
+        );
+      }
+      return id;
+    });
   }
+
   async function event(code, input = {}) {
     if (!codes.has(code)) throw Error("Unknown security event");
     return await db.transaction(async () => {

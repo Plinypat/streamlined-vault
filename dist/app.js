@@ -472,7 +472,17 @@ function renderSecurity() {
     archive = s.archive,
     last = s.maintenance.lastSuccess;
   $("#pagebody").innerHTML =
-    `<div class="notice">${s.synthetic ? "Synthetic test environment. No production assurance is implied." : "Technical approval remains pending until all required live checks and recovery reviews are completed."}</div><div class="stats">${metric("Protected archive", archive.configured ? (archive.synthetic ? "Local test only" : "Configured") : "Needs setup", "365-day COMPLIANCE retention; verified per archived object")}${metric("Scheduled maintenance", s.maintenance.configured ? "Secret configured" : "Secret missing", last ? "Last completed " + date(last.at) : "No completed maintenance run")}${metric("Open alerts", String(s.alerts.filter((a) => a.status === "open").length), "Acknowledgment records a review; it does not fix the underlying problem")}${metric("Access review", s.accessReview ? date(s.accessReview.at) : "Not recorded", "Review accounts and practice roles monthly")}</div><div class="detailgrid"><div class="card section-panel"><div class="cardhead"><h2>Verification and maintenance</h2></div><div class="panel-content"><p>Archive queued logs, verify their chains and locked copies, and check database transport, uploader health and stalled transfers.</p><button class="primary" data-action="securitymaintenance">Run maintenance & archive</button><p>Run a synthetic 17 MiB upload/download/restore test in the selected workspace. Only the generated canary is cleaned up; client files are untouched.</p><button data-action="securitystorage" ${tenant ? "" : "disabled"}>Test selected workspace storage</button><p>Live archive setup uses the approved dedicated 365-day locked bucket. Missing credential permissions are reported, not bypassed.</p>${s.maintenance.lastFailure ? `<div class="notice">Last maintenance failure: ${esc(s.maintenance.lastFailure.message)} (${date(s.maintenance.lastFailure.at)})</div>` : ""}${s.maintenance.stale ? '<div class="notice">Maintenance evidence is missing or older than two hours. Automatic archival is not verified.</div>' : ""}</div></div><div class="card section-panel"><div class="cardhead"><h2>Access and recovery</h2></div><div class="panel-content"><button data-action="securityaccess">Review administrator and member access</button><p>Protected metadata backup and isolated restore tools are included in the operator package. Recovery key custody and independent recovery evidence must be reviewed separately.</p><ul>${s.remaining.map((v) => `<li>${esc(v)}</li>`).join("")}</ul><p>Alerts are retained in this dashboard. External notification delivery has not been configured.</p></div></div></div><div class="card section"><div class="cardhead"><h2>Security alerts</h2></div><div class="panel-content">${s.alerts.length ? s.alerts.map((a) => `<div class="row"><div><strong>${esc(a.code.replaceAll("_", " "))}</strong><p>${esc(a.severity)} · ${esc(a.status)} · ${a.occurrences} occurrence(s) · ${date(a.last_seen)}</p></div>${a.status === "open" ? `<button data-securityack="${a.id}">Acknowledge</button>` : ""}</div>`).join("") : "<p>No alerts recorded. This alone does not establish a completed security review.</p>"}</div></div><div class="card section"><div class="cardhead"><h2>Verification history</h2></div><div class="panel-content">${
+    `<div class="card section-panel"><div class="cardhead"><h2>Recovery backups and readiness</h2></div><div class="panel-content"><p>Metadata backups: ${s.backups?.configured ? "Configured" : "Needs setup"} / 30-day retention</p><p>Last verified: ${s.backups?.lastSuccess ? date(s.backups.lastSuccess.verified) : "Not yet verified"}<br>Next expected scheduled run: ${s.backups?.nextExpected ? date(s.backups.nextExpected) : "Awaiting first scheduled backup"}<br>Monthly restore review: ${s.backups?.restoreReviewDue ? "Due" : "Current"}</p><p>Production authorization: ${config.ready ? "Provider review gates satisfied" : "Pending provider review"}. Technical readiness: ${s.technicalReady ? "Checks current" : "Incomplete"}.</p><button data-action="securitybackup">Run metadata backup</button> <button data-action="securitynotify">Send test alert</button> <button data-action="securityevidence">Record acceptance evidence</button><p>Emails accepted by the delivery service are not proof of inbox receipt.</p>${(
+      s.notifications?.deliveries || []
+    )
+      .slice(0, 5)
+      .map(
+        (d) =>
+          `<p>Notification ${date(d.created)} / ${esc(d.status)} / ${d.attempts} attempt(s)</p>`,
+      )
+      .join(
+        "",
+      )}<p>${(s.evidence || []).map((e) => esc(e.id) + ": " + date(e.created)).join(" / ")}</p></div></div><div class="notice">${s.synthetic ? "Synthetic test environment. No production assurance is implied." : s.technicalApproval ? "Technical review is current. Production authorization remains separate." : "Technical approval remains pending until all required live checks and recovery reviews are completed."}</div><div class="stats">${metric("Protected archive", archive.configured ? (archive.synthetic ? "Local test only" : "Configured") : "Needs setup", "365-day COMPLIANCE retention; verified per archived object")}${metric("Scheduled maintenance", s.maintenance.configured ? "Secret configured" : "Secret missing", last ? "Last completed " + date(last.at) : "No completed maintenance run")}${metric("Open alerts", String(s.alerts.filter((a) => a.status === "open").length), "Acknowledgment records a review; it does not fix the underlying problem")}${metric("Access review", s.accessReview ? date(s.accessReview.at) : "Not recorded", "Review accounts and practice roles monthly")}</div><div class="detailgrid"><div class="card section-panel"><div class="cardhead"><h2>Verification and maintenance</h2></div><div class="panel-content"><p>Archive queued logs, verify their chains and locked copies, and check database transport, uploader health and stalled transfers.</p><button class="primary" data-action="securitymaintenance">Run maintenance & archive</button><p>Run a synthetic 17 MiB upload/download/restore test in the selected workspace. Only the generated canary is cleaned up; client files are untouched.</p><button data-action="securitystorage" ${tenant ? "" : "disabled"}>Test selected workspace storage</button><p>Live archive setup uses the approved dedicated 365-day locked bucket. Missing credential permissions are reported, not bypassed.</p>${s.maintenance.lastFailure ? `<div class="notice">Last maintenance failure: ${esc(s.maintenance.lastFailure.message)} (${date(s.maintenance.lastFailure.at)})</div>` : ""}${s.maintenance.stale ? '<div class="notice">Maintenance evidence is missing or older than two hours. Automatic archival is not verified.</div>' : ""}</div></div><div class="card section-panel"><div class="cardhead"><h2>Access and recovery</h2></div><div class="panel-content"><button data-action="securityaccess">Review administrator and member access</button><p>Protected metadata backup and isolated restore tools are included in the operator package. Recovery key custody and independent recovery evidence must be reviewed separately.</p><ul>${s.remaining.map((v) => `<li>${esc(v)}</li>`).join("")}</ul><p>Alerts are retained in this dashboard. Email delivery: ${s.notifications?.configured ? "configured; confirm inbox receipt separately" : "needs setup"}.</p></div></div></div><div class="card section"><div class="cardhead"><h2>Security alerts</h2></div><div class="panel-content">${s.alerts.length ? s.alerts.map((a) => `<div class="row"><div><strong>${esc(a.code.replaceAll("_", " "))}</strong><p>${esc(a.severity)} · ${esc(a.status)} · ${a.occurrences} occurrence(s) · ${date(a.last_seen)}</p></div>${a.status === "open" ? `<button data-securityack="${a.id}">Acknowledge</button>` : ""}</div>`).join("") : "<p>No alerts recorded. This alone does not establish a completed security review.</p>"}</div></div><div class="card section"><div class="cardhead"><h2>Verification history</h2></div><div class="panel-content">${
       s.checks
         .slice(0, 20)
         .map(
@@ -578,10 +588,10 @@ function renderUploaders() {
 }
 function deviceFields(d) {
   const p = d?.policy || {
-    folder: "Imaging",
-    schedule: { kind: "interval", minutes: 15 },
+    folder: "Pilot test files",
+    schedule: { kind: "daily", time: "21:00", days: [0, 1, 2, 3, 4, 5, 6] },
   };
-  return `${!d ? field("Computer or uploader name", "devicelabel") : ""}${field("Cloud destination folder", "devicefolder", p.folder)}<label class="field">Upload schedule<select id="deviceschedule"><option value="15" ${p.schedule.minutes === 15 ? "selected" : ""}>Every 15 minutes</option><option value="60" ${p.schedule.minutes === 60 ? "selected" : ""}>Hourly</option><option value="240" ${p.schedule.minutes === 240 ? "selected" : ""}>Every 4 hours</option><option value="daily" ${p.schedule.kind === "daily" ? "selected" : ""}>Selected days at a local time</option></select></label>${field("Daily time (practice computer local time)", "devicetime", p.schedule.time || "20:00", "time")}<label class="field">Days</label><div class="actions">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day, i) => `<label style="font-size:11px"><input type="checkbox" name="deviceday" value="${i}" ${(p.schedule.days || [0, 1, 2, 3, 4]).includes(i) ? "checked" : ""}>${day}</label>`).join("")}</div><p style="margin-top:14px">The computer must be awake and online. Local source folders are selected during installation.</p>`;
+  return `${!d ? field("Computer or uploader name", "devicelabel") : ""}${field("Cloud destination folder", "devicefolder", p.folder)}<label class="field">Upload schedule<select id="deviceschedule"><option value="15" ${p.schedule.minutes === 15 ? "selected" : ""}>Every 15 minutes</option><option value="60" ${p.schedule.minutes === 60 ? "selected" : ""}>Hourly</option><option value="240" ${p.schedule.minutes === 240 ? "selected" : ""}>Every 4 hours</option><option value="daily" ${p.schedule.kind === "daily" ? "selected" : ""}>Selected days at a local time</option></select></label>${field("Daily time (practice computer local time)", "devicetime", p.schedule.time || "21:00", "time")}<label class="field">Days</label><div class="actions">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day, i) => `<label style="font-size:11px"><input type="checkbox" name="deviceday" value="${i}" ${(p.schedule.days || [0, 1, 2, 3, 4]).includes(i) ? "checked" : ""}>${day}</label>`).join("")}</div><p style="margin-top:14px">The computer must be awake and online. Local source folders are selected during installation.</p>`;
 }
 function devicePolicy() {
   const value = $("#deviceschedule").value;
@@ -716,7 +726,7 @@ function workspaceDialog(existing, kind = "client") {
 function renderSettings() {
   const t = user.tenants.find((t) => t.id === tenant);
   $("#pagebody").innerHTML =
-    `<div class="detailgrid"><div class="card"><div class="cardhead"><h2>Workspace details</h2><button data-nav="Plan & usage">Plan & usage</button></div>${user.msp ? `<div class="card section-panel"><div class="panel-content"><h3>Large browser transfers</h3><p>Allow this portal’s HTTPS origin to transfer file parts directly into the private bucket. This does not make files public.</p><button data-browsertransfers="${tenant}">Configure browser transfers</button></div></div>` : ""}${[
+    `<div class="detailgrid"><div class="card"><div class="cardhead"><h2>Workspace details</h2><button data-nav="Plan & usage">Plan & usage</button></div>${user.msp ? `<div class="card section-panel"><div class="panel-content"><h3>Large browser transfers</h3><p>Allow this portal’s HTTPS origin to transfer file parts directly into the private bucket. This does not make files public.</p><p>Browser setup: ${t.browserTransfers?.configured ? "Configured" : "Not yet recorded for this website and bucket"}. Production authorization: ${config.ready ? "Provider review gates satisfied" : "Pending review"}.</p><button data-browsertransfers="${tenant}">Configure browser transfers</button></div></div>` : ""}${[
       ["Workspace", t.name],
       ["Storage allowance", "4 TB · 4,000,000,000,000 bytes"],
       [
@@ -1133,6 +1143,33 @@ document.addEventListener("click", async (e) => {
       await api("/api/msp/security/acknowledge", "POST", { id: d.securityack });
       return navigate("Security & logs");
     }
+    if (d.action === "securitybackup" || d.action === "securitynotify") {
+      await api(
+        "/api/msp/security/" +
+          (d.action === "securitybackup" ? "backup" : "test-notification"),
+        "POST",
+        {},
+      );
+      await navigate(page);
+      return toast(
+        d.action === "securitybackup"
+          ? "Backup completed"
+          : "Notification request processed; check delivery status",
+      );
+    }
+    if (d.action === "securityevidence")
+      return modal(
+        "Record completed verification",
+        `<p>Record only checks you actually completed. Do not enter secrets, patient names, or filenames.</p><label class="field">Review<select id="evidencekind">${["restore_drill", "key_custody", "mfa_review", "pilot_review", "notification_receipt", "monitoring_review", "access_review", "endpoint_review", "credential_review", "activation_review"].map((k) => `<option value="${k}">${esc(k.replaceAll("_", " "))}</option>`).join("")}</select></label>${field("Evidence reference", "evidenceref", "", "text")}<p>Reviews expire after 30 days. Activation review requires all technical checks to pass.</p>`,
+        async () => {
+          await api("/api/msp/security/evidence", "POST", {
+            kind: $("#evidencekind").value,
+            reference: $("#evidenceref").value.trim(),
+          });
+          $("#modal").close();
+          await navigate(page);
+        },
+      );
     if (d.action === "securitymaintenance" || d.action === "securitystorage") {
       e.target.disabled = true;
       toast("Running security verification…");
@@ -1181,6 +1218,8 @@ document.addEventListener("click", async (e) => {
         "POST",
         {},
       );
+      await refresh();
+      await navigate(page);
       return toast("Browser transfers configured");
     }
     if (d.action === "invite")

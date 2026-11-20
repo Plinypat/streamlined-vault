@@ -4,6 +4,11 @@ import {
   createCipheriv,
   createDecipheriv,
   createHash,
+  createPublicKey,
+  createPrivateKey,
+  publicEncrypt,
+  privateDecrypt,
+  constants,
 } from "node:crypto";
 export const recoveryTables = [
   "tenants",
@@ -40,13 +45,9 @@ const key = (s) => {
   );
   return Buffer.from(s, "base64");
 };
-export async function encryptedBackup(db, storageKey, backupKey) {
+async function snapshot(db, storageKey) {
   key(storageKey);
-  const cryptoKey = key(backupKey);
-  need(
-    storageKey !== backupKey,
-    "Use a recovery key independent of the storage credential key",
-  );
+
   const ordering = {
     members: "tenant,email",
     clerk_identities: "clerk_id",
@@ -106,13 +107,21 @@ export async function encryptedBackup(db, storageKey, backupKey) {
         "audit-archive-credential",
       );
   }
+  const plaintext = Buffer.from(JSON.stringify(payload));
+  need(plaintext.length <= 64 * 1024 * 1024, "Metadata exceeds 64 MiB");
+  return plaintext;
+}
+export async function encryptedBackup(db, storageKey, backupKey) {
+  need(
+    storageKey !== backupKey,
+    "Use a recovery key independent of the storage credential key",
+  );
+  const plaintext = await snapshot(db, storageKey),
+    cryptoKey = key(backupKey);
   const iv = randomBytes(12),
     cipher = createCipheriv("aes-256-gcm", cryptoKey, iv);
   cipher.setAAD(Buffer.from("Streamlined Vault metadata recovery v1"));
-  const encrypted = Buffer.concat([
-    cipher.update(JSON.stringify(payload)),
-    cipher.final(),
-  ]);
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   return Buffer.concat([
     Buffer.from("SVB1"),
     iv,
@@ -120,7 +129,122 @@ export async function encryptedBackup(db, storageKey, backupKey) {
     encrypted,
   ]);
 }
+export function recoveryKeyId(publicKey) {
+  const publicObject = createPublicKey(publicKey);
+  need(
+    publicObject.asymmetricKeyType === "rsa" &&
+      publicObject.asymmetricKeyDetails.modulusLength >= 3072,
+    "RSA recovery key must be at least 3072 bits",
+  );
+  return createHash("sha256")
+    .update(publicObject.export({ type: "spki", format: "der" }))
+    .digest("hex");
+}
+export async function envelopeBackup(db, storageKey, publicKey) {
+  const plaintext = await snapshot(db, storageKey),
+    dataKey = randomBytes(32),
+    iv = randomBytes(12);
+  const header = Buffer.from(
+    JSON.stringify({
+      format: 2,
+      keyId: recoveryKeyId(publicKey),
+      created: new Date().toISOString(),
+      plaintextBytes: plaintext.length,
+      digest: createHash("sha256").update(plaintext).digest("hex"),
+      wrappedKey: publicEncrypt(
+        {
+          key: publicKey,
+          oaepHash: "sha256",
+          padding: constants.RSA_PKCS1_OAEP_PADDING,
+        },
+        dataKey,
+      ).toString("base64"),
+    }),
+  );
+  const size = Buffer.alloc(4);
+  size.writeUInt32BE(header.length);
+  const cipher = createCipheriv("aes-256-gcm", dataKey, iv);
+  cipher.setAAD(header);
+  try {
+    return Buffer.concat([
+      Buffer.from("SVB2"),
+      size,
+      header,
+      iv,
+      Buffer.concat([cipher.update(plaintext), cipher.final()]),
+      cipher.getAuthTag(),
+    ]);
+  } finally {
+    dataKey.fill(0);
+    plaintext.fill(0);
+  }
+}
+export function backupManifest(bytes) {
+  need(
+    bytes.length >= 40 &&
+      bytes.length <= 70 * 1024 * 1024 &&
+      bytes.subarray(0, 4).toString() === "SVB2",
+    "Invalid envelope bundle",
+  );
+  const n = bytes.readUInt32BE(4);
+  need(
+    n > 0 && n <= 8192 && bytes.length > 8 + n + 28,
+    "Invalid envelope header",
+  );
+  const header = JSON.parse(bytes.subarray(8, 8 + n).toString());
+  need(
+    header.format === 2 &&
+      /^[a-f0-9]{64}$/.test(header.keyId) &&
+      /^[a-f0-9]{64}$/.test(header.digest) &&
+      Number.isInteger(header.plaintextBytes) &&
+      header.plaintextBytes <= 64 * 1024 * 1024,
+    "Invalid envelope manifest",
+  );
+  return { header, n };
+}
+function decryptEnvelope(bytes, privateKey) {
+  const { header, n } = backupManifest(bytes),
+    aad = bytes.subarray(8, 8 + n);
+  const privateObject = createPrivateKey(privateKey);
+  need(
+    recoveryKeyId(
+      createPublicKey(privateObject).export({ type: "spki", format: "pem" }),
+    ) === header.keyId,
+    "Recovery key does not match",
+  );
+  const dataKey = privateDecrypt(
+    {
+      key: privateObject,
+      oaepHash: "sha256",
+      padding: constants.RSA_PKCS1_OAEP_PADDING,
+    },
+    Buffer.from(header.wrappedKey, "base64"),
+  );
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      dataKey,
+      bytes.subarray(8 + n, 20 + n),
+    );
+    decipher.setAAD(aad);
+    decipher.setAuthTag(bytes.subarray(-16));
+    const plaintext = Buffer.concat([
+      decipher.update(bytes.subarray(20 + n, -16)),
+      decipher.final(),
+    ]);
+    need(
+      plaintext.length === header.plaintextBytes &&
+        createHash("sha256").update(plaintext).digest("hex") === header.digest,
+      "Recovery integrity mismatch",
+    );
+    return JSON.parse(plaintext.toString());
+  } finally {
+    dataKey.fill(0);
+  }
+}
 export function decryptBackup(bytes, backupKey) {
+  if (bytes.subarray(0, 4).toString() === "SVB2")
+    return validatePayload(decryptEnvelope(bytes, backupKey));
   need(
     bytes.length >= 32 &&
       bytes.length <= 70 * 1024 * 1024 &&
@@ -140,6 +264,9 @@ export function decryptBackup(bytes, backupKey) {
       decipher.final(),
     ]).toString(),
   );
+  return validatePayload(payload);
+}
+function validatePayload(payload) {
   need(
     payload.format === 1 &&
       payload.tables &&
@@ -158,7 +285,14 @@ export async function restoreBackup(db, payload) {
   const counts = {};
   await db.transaction(async () => {
     await db.lock("security:isolated-recovery");
-    for (const table of [...recoveryTables, "sessions", "enrollments"])
+    for (const table of [
+      ...recoveryTables,
+      "sessions",
+      "enrollments",
+      "backup_history",
+      "alert_deliveries",
+      "readiness_evidence",
+    ])
       need(
         Number(
           (await db.one(`SELECT COUNT(*) AS count FROM ${table}`)).count,

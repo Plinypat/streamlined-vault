@@ -1,0 +1,38 @@
+name: Independent portal availability
+on:
+  schedule:
+    - cron: "3,18,33,48 * * * *"
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: independent-portal-availability
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check production and report without logs or patient data
+        env:
+          MONITOR_URL: ${{ secrets.HEALTHCHECKS_PORTAL_URL }}
+        run: |
+          node --input-type=module <<'JS'
+          const monitor=process.env.MONITOR_URL;
+          if(!monitor){console.error('Independent monitor secret is not configured');process.exit(1);}
+          const u=new URL(monitor);
+          if(u.origin!=='https://hc-ping.com'||!/^\/[a-f0-9-]{36}$/.test(u.pathname)||u.search||u.hash||u.username||u.password)throw Error('Invalid monitor configuration');
+          let healthy=false;
+          try {
+            const [health,home]=await Promise.all([
+              fetch('https://www.streamlinedvault.com/health',{redirect:'error',signal:AbortSignal.timeout(15000)}),
+              fetch('https://www.streamlinedvault.com/',{redirect:'error',signal:AbortSignal.timeout(15000)})
+            ]);
+            healthy=health.ok&&home.ok&&(await health.json()).ok===true&&(await home.text()).includes('Streamlined');
+          }catch{}
+          try {
+            const ping=await fetch(u.href+(healthy?'':'/fail'),{method:'POST',body:'',redirect:'error',signal:AbortSignal.timeout(10000)});
+            if(!ping.ok)throw Error('Monitor did not accept status');
+          }catch{console.error('Independent monitor delivery failed');process.exit(1);}
+          if(!healthy){console.error('Production availability probe failed');process.exit(1);}
+          console.log('Public portal and database health responded successfully');
+          JS

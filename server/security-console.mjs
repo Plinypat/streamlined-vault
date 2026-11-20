@@ -1,3 +1,5 @@
+import { createMetadataBackups } from "./metadata-backups.mjs";
+import { createNotifications, heartbeat } from "./notifications.mjs";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { createAuditArchive, readBounded } from "./audit-archive.mjs";
 const hash = (b) => createHash("sha256").update(b).digest("hex");
@@ -130,6 +132,8 @@ export function createSecurityConsole({
 }) {
   const archive =
     providedArchive || createAuditArchive({ db, env, demo, data, log });
+  const notifications = createNotifications({ db, env });
+  const backups = createMetadataBackups({ db, env, log, notifications });
   async function check(kind, tenant, status, result) {
     const item = {
       id: randomUUID(),
@@ -149,6 +153,25 @@ export function createSecurityConsole({
       item.created,
     );
     return item;
+  }
+  async function browserStatus(tenant) {
+    const saved = await archive.setting("browser_origin:" + tenant);
+    const view = await workspaceStorage.view(tenant, true);
+    return {
+      configured:
+        !!saved &&
+        saved.origin === env.APP_ORIGIN &&
+        saved.bucket === view.bucket,
+      configuredAt: saved?.at || null,
+    };
+  }
+  async function recordBrowser(tenant) {
+    const view = await workspaceStorage.view(tenant, true);
+    await archive.save("browser_origin:" + tenant, {
+      at: new Date().toISOString(),
+      origin: env.APP_ORIGIN,
+      bucket: view.bucket,
+    });
   }
   async function databaseCheck() {
     if (demo && db.kind === "sqlite")
@@ -331,9 +354,32 @@ export function createSecurityConsole({
           archive: verified,
         },
       );
+      if (actor === "security-maintenance")
+        await heartbeat(env.HEALTHCHECKS_MAINTENANCE_URL, "success");
+      const priorFailure = await db.one(
+        "SELECT id FROM security_alerts WHERE code='maintenance_failed' AND status='open'",
+      );
+      if (priorFailure) {
+        await db.run(
+          "UPDATE security_alerts SET status='resolved' WHERE id=?",
+          priorFailure.id,
+        );
+        await db.run(
+          "UPDATE security_alerts SET status='resolved' WHERE code='maintenance_recovered'",
+        );
+        await log.alert("maintenance_recovered", "info");
+      }
+      await notifications.drain();
+      const b = await backups.status();
+      if (b.restoreReviewDue) await log.alert("restore_review_due", "warning");
       return { ...result, verified };
     } catch (e) {
       await log.event("maintenance_failed", { actor, severity: "high" });
+      if (actor === "security-maintenance")
+        await heartbeat(env.HEALTHCHECKS_MAINTENANCE_URL, "failure").catch(
+          () => {},
+        );
+      await notifications.drain();
       await archive.save("maintenance_last_failure", {
         at: new Date().toISOString(),
         code: e.providerCode || "MAINTENANCE_FAILED",
@@ -367,8 +413,73 @@ export function createSecurityConsole({
     );
     const scheduled =
       scheduledRecord?.trigger === "vercel_cron" ? scheduledRecord : null;
+    const backupState = await backups.status(),
+      notificationState = await notifications.status();
+    const evidence = await db.q(
+      "SELECT id,reviewer,created,expires,reference FROM readiness_evidence ORDER BY id",
+    );
+    const current = (id) =>
+      evidence.some((e) => e.id === id && Date.parse(e.expires) > Date.now());
+    const latest = (kind) => checks.find((c) => c.kind === kind);
+    const gates = {
+      database:
+        latest("database")?.status === "passed" &&
+        Date.now() - Date.parse(latest("database").created) < 86400000,
+      logIntegrity:
+        latest("log_integrity")?.status === "passed" &&
+        Date.now() - Date.parse(latest("log_integrity").created) < 86400000,
+      auditArchive: (await archive.status()).configured && !demo,
+      scheduledMaintenance:
+        !(await archive.setting("maintenance_last_failure")) &&
+        !!scheduled &&
+        Date.now() - Date.parse(scheduled.at) < 30 * 60000,
+      backups: backupState.configured && !backupState.stale,
+      recovery: current("restore_drill"),
+      keyCustody: current("key_custody"),
+      mfa: current("mfa_review"),
+      pilot: current("pilot_review"),
+      notifications:
+        notificationState.configured && current("notification_receipt"),
+      monitoring:
+        notificationState.backupMonitorConfigured &&
+        notificationState.maintenanceMonitorConfigured &&
+        current("monitoring_review"),
+      access: current("access_review"),
+      endpoint: current("endpoint_review"),
+      credentialRotation: current("credential_review"),
+    };
+    const practices = await db.q(
+      "SELECT id FROM tenants WHERE status='active'",
+    );
+    const workspaceChecks = await Promise.all(
+      practices.map((t) =>
+        db.one(
+          "SELECT status,result,created FROM security_checks WHERE kind='storage' AND tenant=? ORDER BY created DESC LIMIT 1",
+          t.id,
+        ),
+      ),
+    );
+    gates.storage =
+      practices.length > 0 &&
+      workspaceChecks.every(
+        (c) =>
+          c &&
+          c.status === "passed" &&
+          JSON.parse(c.result).crossBucketVerified &&
+          JSON.parse(c.result).browserOriginVerified &&
+          Date.now() - Date.parse(c.created) < 7 * 86400000,
+      );
+    gates.criticalAlerts = !alerts.some(
+      (a) => a.status === "open" && ["high", "critical"].includes(a.severity),
+    );
+    const technicalReady = !demo && Object.values(gates).every(Boolean);
     return {
-      technicalApproval: false,
+      technicalApproval: technicalReady && current("activation_review"),
+      technicalReady,
+      gates,
+      evidence,
+      backups: backupState,
+      notifications: notificationState,
       synthetic: demo,
       archive: await archive.status(),
       maintenance: {
@@ -385,12 +496,9 @@ export function createSecurityConsole({
         "SELECT id,created,event,severity,status,tenant,resource,request_id,route,method FROM security_events ORDER BY rowid DESC LIMIT 100",
       ),
       accessReview: await archive.setting("access_review"),
-      remaining: [
-        "Independent recovery-key custody and metadata restore drill",
-        "Production endpoint/MFA recovery and revocation acceptance",
-        "Runtime database role, previously shared credential rotation and platform configuration review",
-        "External alert delivery and independent schedule monitoring",
-      ],
+      remaining: Object.entries(gates)
+        .filter(([, passed]) => !passed)
+        .map(([name]) => name + " verification pending"),
     };
   }
   async function acknowledge(id, actor) {
@@ -410,8 +518,52 @@ export function createSecurityConsole({
     await log.event("access_review", { actor });
     await audit("msp", actor, "Privileged access reviewed");
   }
+  async function recordEvidence(actor, input) {
+    const allowed = [
+      "restore_drill",
+      "key_custody",
+      "mfa_review",
+      "pilot_review",
+      "notification_receipt",
+      "monitoring_review",
+      "access_review",
+      "endpoint_review",
+      "credential_review",
+      "activation_review",
+    ];
+    need(allowed.includes(input.kind), "Unknown review");
+    need(
+      typeof input.reference === "string" &&
+        /^[A-Za-z0-9 ._:/-]{3,160}$/.test(input.reference),
+      "Use a short evidence reference, without secrets or patient details",
+    );
+    if (input.kind === "activation_review")
+      need((await status()).technicalReady, "Complete technical checks first");
+    const at = new Date().toISOString(),
+      expires = new Date(Date.now() + 30 * 86400000).toISOString();
+    await db.run(
+      "INSERT INTO readiness_evidence(id,reviewer,created,expires,reference) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET reviewer=excluded.reviewer,created=excluded.created,expires=excluded.expires,reference=excluded.reference",
+      input.kind,
+      actor,
+      at,
+      expires,
+      input.reference,
+    );
+    await audit(
+      "msp",
+      actor,
+      "Technical readiness evidence recorded",
+      input.kind,
+    );
+    return { ok: true };
+  }
   return {
     status,
+    browserStatus,
+    recordBrowser,
+    backups,
+    notifications,
+    recordEvidence,
     maintenance,
     storageCheck,
     databaseCheck,
