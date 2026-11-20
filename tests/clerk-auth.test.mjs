@@ -52,3 +52,12 @@ test('production key diagnostics identify the setting without revealing credenti
  assert.deepEqual(clerkConfiguration({...live,CLERK_PUBLISHABLE_KEY:' \n'+live.CLERK_PUBLISHABLE_KEY+'\n',CLERK_SECRET_KEY:' '+live.CLERK_SECRET_KEY+'\n'}),clerkConfiguration(live));
  assert.throws(()=>clerkConfiguration({...live,CLERK_SECRET_KEY:'"'+live.CLERK_SECRET_KEY+'"'}),/CLERK_SECRET_KEY/);
 });
+
+test('NEXT_PUBLIC Clerk key takes priority over the legacy variable',()=>{
+ const preferred='pk_live_'+Buffer.from('clerk.preferred.test$').toString('base64');
+ const config=clerkConfiguration({...env,NODE_ENV:'production',NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:preferred,CLERK_SECRET_KEY:'sk_live_synthetic'});
+ assert.equal(config.publishableKey,preferred);
+ assert.equal(config.frontendApi,'https://clerk.preferred.test');
+ const onlyPublic={...env,NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:env.CLERK_PUBLISHABLE_KEY};delete onlyPublic.CLERK_PUBLISHABLE_KEY;
+ assert.equal(clerkConfiguration(onlyPublic).publishableKey,env.CLERK_PUBLISHABLE_KEY);
+});

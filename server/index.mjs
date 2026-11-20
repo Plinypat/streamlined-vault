@@ -10,7 +10,7 @@ import { createDevices } from './devices.mjs';
 import { createClerkAuth, contentSecurityPolicy } from './clerk-auth.mjs';
 
 const env=process.env, demo=env.DEMO_MODE==='true', production=env.NODE_ENV==='production';
-env.CLERK_PUBLISHABLE_KEY ||= env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+env.CLERK_PUBLISHABLE_KEY = env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || env.CLERK_PUBLISHABLE_KEY;
 if(demo&&production)throw Error('Demo mode is prohibited in production');
 const origin=env.APP_ORIGIN||'http://127.0.0.1:4173', data=resolve(env.DATA_DIRECTORY||'data');
 if(!demo){for(const k of ['CLERK_PUBLISHABLE_KEY','CLERK_SECRET_KEY','MSP_ADMINS','STORAGE_ENDPOINT','STORAGE_REGION','STORAGE_BUCKET','STORAGE_KEY_ID','STORAGE_APPLICATION_KEY'])if(!env[k])throw Error(`Missing server configuration: ${k}`);if(!origin.startsWith('https://'))throw Error('Live mode requires HTTPS');}

@@ -3,8 +3,9 @@ import { createClerkClient } from '@clerk/backend';
 const fail=(status,message,code)=>Object.assign(Error(message),{status,code});
 
 export function clerkConfiguration(env) {
-  const key=(env.CLERK_PUBLISHABLE_KEY||env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY||'').trim();
-  if(!/^pk_(test|live)_[A-Za-z0-9+/=_-]+$/.test(key))throw Error('Configure CLERK_PUBLISHABLE_KEY on the server');
+  const keyName=env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY':'CLERK_PUBLISHABLE_KEY';
+  const key=(env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY||env.CLERK_PUBLISHABLE_KEY||'').trim();
+  if(!/^pk_(test|live)_[A-Za-z0-9+/=_-]+$/.test(key))throw Error(`Configure ${keyName} on the server`);
   const decoded=Buffer.from(key.replace(/^pk_(test|live)_/,''),'base64').toString('utf8');
   if(!decoded.endsWith('$'))throw Error('Invalid Clerk publishable key');
   const host=decoded.slice(0,-1);
@@ -12,7 +13,7 @@ export function clerkConfiguration(env) {
   const secret=(env.CLERK_SECRET_KEY||'').trim();
   if(!secret)throw Error('Configure CLERK_SECRET_KEY only on the server');
   if(env.NODE_ENV==='production'){
-    if(!key.startsWith('pk_live_'))throw Error('CLERK_PUBLISHABLE_KEY is not a live production key; copy the pk_live_ value from Clerk Production API Keys');
+    if(!key.startsWith('pk_live_'))throw Error(`${keyName} is not a live production key; copy the pk_live_ value from Clerk Production API Keys`);
     if(!secret.startsWith('sk_live_'))throw Error('CLERK_SECRET_KEY is not a live production secret; copy the sk_live_ value from Clerk Production API Keys without quotes or a variable-name prefix');
   }
   if(!/^sk_(test|live)_[A-Za-z0-9_-]+$/.test(secret))throw Error('CLERK_SECRET_KEY has invalid formatting; enter only the secret value without quotes or a variable-name prefix');
