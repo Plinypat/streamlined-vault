@@ -62,6 +62,7 @@ function lockedProvider() {
   return {
     calls,
     checkProvisioning: async () => ({
+      accountId: "synthetic-account",
       endpoint: "https://s3.us-west-004.backblazeb2.com",
       region: "us-west-004",
       allowed: {
@@ -213,6 +214,51 @@ test("approved archive creates a separate private locked bucket and verifies enc
       (o) => !o.bytes.toString().includes("staff@example.test"),
     ),
   );
+  const expected = await archive.environment();
+  provider.authorize = async () => ({
+    accountId: "synthetic-account",
+    endpoint: "https://s3.us-west-004.backblazeb2.com",
+    region: "us-west-004",
+    allowed: {
+      buckets: [{ id: "synthetic-audit" }],
+      capabilities: [
+        "listBuckets",
+        "readBuckets",
+        "readBucketEncryption",
+        "readBucketRetentions",
+        "listFiles",
+        "readFiles",
+        "writeFiles",
+        "readFileRetentions",
+        "writeFileRetentions",
+      ],
+    },
+  });
+  assert.equal(
+    (
+      await archive.connect({
+        bucket: expected.expectedBucket,
+        keyId: "rotated",
+        applicationKey: "synthetic-rotated-key",
+      })
+    ).configured,
+    true,
+  );
+  const authorized = provider.authorize;
+  provider.authorize = async () => ({
+    ...(await authorized()),
+    accountId: "other-account",
+  });
+  await assert.rejects(
+    () =>
+      archive.connect({
+        bucket: expected.expectedBucket,
+        keyId: "foreign",
+        applicationKey: "synthetic",
+      }),
+    /different account/,
+  );
+  provider.authorize = authorized;
   assert.equal((await archive.verifyLatest()).ok, true);
   assert.equal((await archive.flush()).archivedBatches, 0);
   const first = await db.one(

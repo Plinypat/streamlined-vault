@@ -443,7 +443,13 @@ const server = http.createServer((req, res) =>
         l.n++;
         limits.set(ip, l);
         need(l.n < 1800, 429, "Too many requests; retry shortly");
-        if (path === "/internal/security-maintenance" && method === "GET") {
+        if (
+          [
+            "/internal/security-maintenance",
+            "/internal/security-status",
+            "/internal/security-archive-connect",
+          ].includes(path)
+        ) {
           const expected = env.CRON_SECRET;
           need(
             typeof expected === "string" &&
@@ -459,6 +465,35 @@ const server = http.createServer((req, res) =>
             "Maintenance authorization required",
           );
           context.maintenanceAuthenticated = true;
+          if (path === "/internal/security-status" && method === "GET") {
+            const state = await security.status();
+            return send(res, 200, {
+              archive: state.archive,
+              maintenance: state.maintenance,
+              checks: state.checks.slice(0, 12),
+              openAlerts: state.alerts
+                .filter((a) => a.status === "open")
+                .map((a) => a.code),
+              environment: await security.archive.environment(),
+            });
+          }
+          if (
+            path === "/internal/security-archive-connect" &&
+            method === "POST"
+          ) {
+            const value = await security.archive.connect(await body(req));
+            await audit(
+              "msp",
+              "security-maintenance",
+              "Approved protected audit archive connected",
+            );
+            return send(res, 200, value);
+          }
+          need(
+            path === "/internal/security-maintenance" && method === "GET",
+            405,
+            "Maintenance method not allowed",
+          );
           return send(res, 200, await security.maintenance());
         }
         if (path === "/api/config")

@@ -367,5 +367,105 @@ export function createAuditArchive({
       synthetic: demo,
     };
   }
-  return { setup, flush, status, verifyLatest, write, setting, save };
+  async function environment() {
+    const auth = await provider.checkProvisioning(env);
+    return {
+      accountFingerprint: digest(auth.accountId),
+      region: auth.region,
+      origin: new URL(env.APP_ORIGIN).origin,
+      expectedBucket:
+        "sv-audit-" +
+        createHash("sha256")
+          .update(new URL(env.APP_ORIGIN).origin)
+          .digest("hex")
+          .slice(0, 24),
+    };
+  }
+  async function connect(input) {
+    need(
+      !demo && policy.archiveApproved,
+      "Live archive connection is not approved",
+    );
+    const expected = await environment();
+    need(
+      input &&
+        input.bucket === expected.expectedBucket &&
+        typeof input.keyId === "string" &&
+        typeof input.applicationKey === "string",
+      "Use the approved audit bucket and its restricted credential",
+    );
+    const auth = await provider.authorize(input.keyId, input.applicationKey);
+    need(
+      digest(auth.accountId) === expected.accountFingerprint,
+      "Archive credential belongs to a different account",
+    );
+    need(
+      auth.allowed?.buckets?.length === 1 && !auth.allowed.namePrefix,
+      "Archive credential must be restricted to one whole bucket",
+    );
+    const allowed = [
+      "listBuckets",
+      "readBuckets",
+      "readBucketEncryption",
+      "readBucketRetentions",
+      "listFiles",
+      "readFiles",
+      "writeFiles",
+      "readFileRetentions",
+      "writeFileRetentions",
+    ];
+    need(
+      allowed.every((c) => auth.allowed.capabilities.includes(c)) &&
+        auth.allowed.capabilities.every((c) => allowed.includes(c)),
+      "Use only the documented archive read/write/retention capabilities, with no deletion or account management",
+    );
+    const b = await provider.verify(auth, input.bucket),
+      lock = b.fileLockConfiguration?.value;
+    need(
+      auth.allowed.buckets[0].id === b.bucketId &&
+        b.bucketInfo?.["sv-purpose"] === "security-audit" &&
+        b.bucketInfo?.["sv-origin"] === input.bucket.slice("sv-audit-".length),
+      "Audit bucket ownership or scope did not match",
+    );
+    need(
+      lock?.isFileLockEnabled &&
+        lock.defaultRetention?.mode === "compliance" &&
+        lock.defaultRetention.period?.duration === 365 &&
+        lock.defaultRetention.period.unit === "days",
+      "Approved archive retention was not verified",
+    );
+    await db.transaction(async () => {
+      await db.lock("security:archive-setup");
+      const old = await setting("archive_config");
+      need(
+        !old || old.bucket === input.bucket,
+        "Archive history cannot be moved to another bucket",
+      );
+      await save("archive_config", {
+        bucket: input.bucket,
+        endpoint: auth.endpoint,
+        region: auth.region,
+        credential: sealCredentials(
+          { keyId: input.keyId, applicationKey: input.applicationKey },
+          encryptionKey(env),
+          "audit-archive-credential",
+        ),
+        created: new Date().toISOString(),
+        retentionDays: 365,
+        mode: "compliance",
+      });
+    });
+    return { configured: true, retentionDays: 365 };
+  }
+  return {
+    setup,
+    flush,
+    status,
+    verifyLatest,
+    write,
+    setting,
+    save,
+    environment,
+    connect,
+  };
 }
