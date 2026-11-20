@@ -4,7 +4,7 @@ New workspace setup supports creating a private encrypted bucket or connecting a
 
 ## Deployment prerequisite
 
-The application still uses SQLite for metadata. Vercel functions are stateless, so real dedicated bucket provisioning is explicitly blocked there until the planned Neon migration is implemented and tested. Do not remove the gate or use a temporary directory as a persistence workaround. A single server with encrypted persistent storage can pilot the feature with synthetic data. Other stateless/multi-instance deployments are also unsupported by this SQLite adapter. The UI and synthetic local preview are reviewable now; live B2 provisioning and real provider round trips have not been acceptance-tested.
+Live mode now requires migrated Postgres metadata through DATABASE_URL. SQLite is retained only for local synthetic testing. Dedicated provisioning on Vercel is available when Postgres metadata and the server secrets are configured; no temporary filesystem is used for live records. The metadata migration is versioned and guarded by a database lock. Existing SQLite backups require explicit offline import; see NEON-MIGRATION.md. Live B2 provisioning and actual provider round trips still require synthetic acceptance testing before practice rollout.
 
 ## Server configuration
 

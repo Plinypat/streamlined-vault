@@ -1,0 +1,22 @@
+CREATE TABLE tenants(id TEXT PRIMARY KEY,name TEXT NOT NULL,quota BIGINT NOT NULL CHECK(quota>0),status TEXT NOT NULL DEFAULT 'active');
+CREATE TABLE members(tenant TEXT NOT NULL REFERENCES tenants(id),email TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('admin','editor','viewer','uploader')),PRIMARY KEY(tenant,email));
+CREATE TABLE sessions(hash TEXT PRIMARY KEY,"user" TEXT NOT NULL,expires BIGINT NOT NULL,csrf TEXT NOT NULL);
+CREATE INDEX session_expiry ON streamlined_vault.sessions(expires);
+CREATE TABLE clerk_identities(clerk_id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE);
+CREATE TABLE files(id TEXT PRIMARY KEY,tenant TEXT NOT NULL REFERENCES tenants(id),name TEXT NOT NULL,folder TEXT NOT NULL,size BIGINT NOT NULL CHECK(size>0),key TEXT NOT NULL,version TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,upload TEXT,created TEXT NOT NULL,requestid TEXT,storage_tenant TEXT);
+CREATE UNIQUE INDEX upload_request_id ON streamlined_vault.files(tenant,requestid);
+CREATE INDEX file_workspace_status ON streamlined_vault.files(tenant,status);
+CREATE TABLE parts(file TEXT NOT NULL REFERENCES files(id),number INTEGER NOT NULL,etag TEXT NOT NULL,size BIGINT NOT NULL,PRIMARY KEY(file,number));
+CREATE TABLE audit(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,actor TEXT NOT NULL,action TEXT NOT NULL,resource TEXT NOT NULL,created TEXT NOT NULL,previous TEXT NOT NULL,digest TEXT NOT NULL,seq BIGSERIAL UNIQUE NOT NULL);
+CREATE INDEX audit_workspace_seq ON streamlined_vault.audit(tenant,seq);
+CREATE TABLE automations(id TEXT PRIMARY KEY,tenant TEXT NOT NULL REFERENCES tenants(id),name TEXT NOT NULL,type TEXT NOT NULL,interval INTEGER NOT NULL,enabled INTEGER NOT NULL,next BIGINT NOT NULL,last TEXT NOT NULL DEFAULT 'Never',result TEXT NOT NULL DEFAULT 'Not run');
+CREATE TABLE tokens(id TEXT PRIMARY KEY,tenant TEXT NOT NULL REFERENCES tenants(id),label TEXT NOT NULL,hash TEXT NOT NULL UNIQUE,scope TEXT NOT NULL,expires BIGINT NOT NULL,revoked INTEGER NOT NULL DEFAULT 0,last TEXT);
+CREATE TABLE notices(id TEXT PRIMARY KEY,tenant TEXT NOT NULL REFERENCES tenants(id),title TEXT NOT NULL,created TEXT NOT NULL);
+CREATE TABLE devices(id TEXT PRIMARY KEY,tenant TEXT NOT NULL REFERENCES tenants(id),label TEXT NOT NULL,token TEXT REFERENCES tokens(id),policy TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,command INTEGER NOT NULL DEFAULT 0,paused INTEGER NOT NULL DEFAULT 0,revoked INTEGER NOT NULL DEFAULT 0,last_seen TEXT,status TEXT NOT NULL DEFAULT 'pending',version TEXT,last_success TEXT,created TEXT NOT NULL);
+CREATE TABLE enrollments(hash TEXT PRIMARY KEY,device TEXT NOT NULL REFERENCES devices(id),expires BIGINT NOT NULL,consumed INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE device_runs(id TEXT PRIMARY KEY,device TEXT NOT NULL REFERENCES devices(id),tenant TEXT NOT NULL REFERENCES tenants(id),status TEXT NOT NULL,uploaded INTEGER NOT NULL,skipped INTEGER NOT NULL,failed INTEGER NOT NULL,created TEXT NOT NULL);
+CREATE TABLE workspace_storage(tenant TEXT PRIMARY KEY REFERENCES tenants(id),bucket TEXT NOT NULL UNIQUE,bucket_id TEXT,endpoint TEXT NOT NULL,region TEXT NOT NULL,credential TEXT,mode TEXT NOT NULL,status TEXT NOT NULL,created TEXT NOT NULL,lease_token TEXT,lease_until BIGINT NOT NULL DEFAULT 0);
+CREATE TABLE storage_requests(request_id TEXT PRIMARY KEY,tenant TEXT NOT NULL UNIQUE REFERENCES tenants(id),name TEXT NOT NULL);
+
+ALTER TABLE streamlined_vault.files ADD CONSTRAINT file_storage_owner CHECK(storage_tenant IS NULL OR storage_tenant=tenant);
+ALTER TABLE streamlined_vault.files ADD CONSTRAINT file_storage_binding FOREIGN KEY(storage_tenant) REFERENCES streamlined_vault.workspace_storage(tenant);

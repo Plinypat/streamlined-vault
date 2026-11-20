@@ -24,3 +24,32 @@ jobs:
           $tokens=$null;$errors=$null
           [Management.Automation.Language.Parser]::ParseFile((Resolve-Path agent/Install-Uploader.ps1),[ref]$tokens,[ref]$errors) | Out-Null
           if($errors.Count){$errors;exit 1}
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: vault_test
+          POSTGRES_PASSWORD: synthetic_ci_only
+          POSTGRES_DB: sv_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vault_test -d sv_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_URL: postgresql://vault_test:synthetic_ci_only@127.0.0.1:5432/sv_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run test:postgres

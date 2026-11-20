@@ -12,6 +12,6 @@ Synthetic SDK tests cover invalid signatures, wrong origin/issuer, missing or st
 
 Live mode requires HTTPS, Clerk keys, MSP administrator allowlist and object-storage settings. Before PHI, verify contractual and operational requirements, including Clerk's appropriate BAA and CLERK_BAA_CONFIRMED, hosting approval and storage-provider BAA. Development keys are rejected in NODE_ENV=production.
 
-Neon: a verified TLS connection check succeeded. server/postgres.mjs is a connection utility; the application runtime remains SQLite. Do not assume DATABASE_URL alone migrates metadata or backups. Rotate the database password shared in chat before production use.
+Neon: a verified TLS connection check succeeded. Live runtime now uses Postgres and versioned migrations; local demo mode retains SQLite. Existing SQLite records are imported only through the explicit offline migration tool. DATABASE_URL alone does not migrate existing records or establish backups. Rotate the database password shared in chat before production use.
 
 The canonical publishable-key variable is NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY. It takes priority over the legacy CLERK_PUBLISHABLE_KEY alias when both exist. CLERK_SECRET_KEY remains server-only.
