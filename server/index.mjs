@@ -10,7 +10,10 @@ import { mkdirSync, readFileSync, existsSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { createWorkspaceStorage } from "./workspace-storage.mjs";
+import {
+  createWorkspaceStorage,
+  BucketProvisioner,
+} from "./workspace-storage.mjs";
 import { createDevices } from "./devices.mjs";
 import { createClerkAuth, contentSecurityPolicy } from "./clerk-auth.mjs";
 
@@ -62,6 +65,30 @@ const msp = new Set(
     .map((v) => v.trim().toLowerCase()),
 );
 const workspaceStorage = await createWorkspaceStorage({ db, env, demo, data });
+// Read-only diagnostics: authorize/check capabilities only. Never creates resources.
+if (
+  !demo &&
+  env.STORAGE_PROVISIONING_KEY_ID &&
+  env.STORAGE_PROVISIONING_APPLICATION_KEY
+) {
+  try {
+    await new BucketProvisioner({ timeoutMs: 5000 }).checkProvisioning(env);
+    console.log(
+      JSON.stringify({ event: "storage_provisioning_check", status: "ready" }),
+    );
+  } catch (e) {
+    console.warn(
+      JSON.stringify({
+        event: "storage_provisioning_check",
+        status: "failed",
+        operation: e.providerOperation || "configuration",
+        code: e.providerCode || "CONFIGURATION",
+        field: e.field,
+        message: e.message,
+      }),
+    );
+  }
+}
 const ready =
   demo ||
   (env.PROVIDER_BAA_CONFIRMED === "true" &&

@@ -336,3 +336,50 @@ test("stateless production hosts cannot provision buckets into ephemeral SQLite 
   );
   db.close();
 });
+
+test("provisioning authorization trims pasted whitespace and performs no writes", async () => {
+  const { provider, calls } = providerFixture({ management: true });
+  await provider.checkProvisioning({
+    STORAGE_PROVISIONING_KEY_ID: "  synthetic-id\n",
+    STORAGE_PROVISIONING_APPLICATION_KEY: " synthetic-secret\r\n",
+  });
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith("b2_authorize_account"));
+  assert.equal(
+    Buffer.from(
+      calls[0].options.headers.Authorization.slice(6),
+      "base64",
+    ).toString(),
+    "synthetic-id:synthetic-secret",
+  );
+  await assert.rejects(
+    provider.checkProvisioning({
+      STORAGE_PROVISIONING_KEY_ID: "synthetic-id",
+      STORAGE_PROVISIONING_APPLICATION_KEY: '"synthetic-secret"',
+    }),
+    (e) => e.field === "STORAGE_PROVISIONING_APPLICATION_KEY",
+  );
+});
+test("rejected credentials report a safe operation and never echo provider response details", async () => {
+  const provider = new BucketProvisioner({
+    fetchImpl: async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({
+        code: "bad_auth_token",
+        message: "Untrusted echo synthetic-secret",
+      }),
+    }),
+  });
+  await assert.rejects(
+    provider.checkProvisioning({
+      STORAGE_PROVISIONING_KEY_ID: "synthetic-id",
+      STORAGE_PROVISIONING_APPLICATION_KEY: "synthetic-secret",
+    }),
+    (e) =>
+      e.providerOperation === "b2_authorize_account" &&
+      e.providerCode === "bad_auth_token" &&
+      !e.message.includes("synthetic-secret") &&
+      e.message.includes("matching pair"),
+  );
+});

@@ -111,8 +111,9 @@ const nativeUrl = (value) => {
 
 // The account-level provisioning credential is never used for file transfers.
 export class BucketProvisioner {
-  constructor({ fetchImpl = fetch } = {}) {
+  constructor({ fetchImpl = fetch, timeoutMs = 20000 } = {}) {
     this.fetch = fetchImpl;
+    this.timeoutMs = timeoutMs;
   }
   async json(url, options) {
     let r;
@@ -120,7 +121,7 @@ export class BucketProvisioner {
       r = await this.fetch(url, {
         ...options,
         redirect: "error",
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch {
       throw fail(
@@ -142,25 +143,77 @@ export class BucketProvisioner {
         bad_auth_token: "Storage credential was rejected",
         expired_auth_token: "Storage authorization expired; retry setup",
       };
-      throw fail(
+      const operation = new URL(url).pathname.split("/").at(-1);
+      const failure = fail(
         r.status === 401 || r.status === 403 ? 400 : 502,
         known[d.code] ||
           "Storage setup was rejected; check the bucket and key permissions",
       );
+      failure.providerOperation = [
+        "b2_authorize_account",
+        "b2_list_buckets",
+        "b2_create_bucket",
+        "b2_create_key",
+      ].includes(operation)
+        ? operation
+        : "unknown";
+      failure.providerCode = Object.hasOwn(known, d.code)
+        ? d.code
+        : "provider_error";
+      console.warn(
+        JSON.stringify({
+          event: "storage_provider_rejected",
+          operation: failure.providerOperation,
+          code: failure.providerCode,
+          status: r.status,
+        }),
+      );
+      throw failure;
     }
     return d;
   }
-  async authorize(keyId, applicationKey) {
-    const d = await this.json(
-      "https://api.backblazeb2.com/b2api/v4/b2_authorize_account",
-      {
-        headers: {
-          Authorization:
-            "Basic " +
-            Buffer.from(keyId + ":" + applicationKey).toString("base64"),
+  async authorize(keyId, applicationKey, provisioning = false) {
+    const fields = provisioning
+      ? ["STORAGE_PROVISIONING_KEY_ID", "STORAGE_PROVISIONING_APPLICATION_KEY"]
+      : ["Bucket key ID", "Bucket application key"];
+    const clean = (value, field) => {
+      const text = typeof value === "string" ? value.trim() : "";
+      const problem =
+        !text || /[\s"']/.test(text) || text.startsWith(field + "=");
+      if (problem) {
+        const e = fail(
+          400,
+          `${field} must contain only its value, without quotes or a variable-name prefix`,
+        );
+        e.field = field;
+        throw e;
+      }
+      return text;
+    };
+    keyId = clean(keyId, fields[0]);
+    applicationKey = clean(applicationKey, fields[1]);
+    let d;
+    try {
+      d = await this.json(
+        "https://api.backblazeb2.com/b2api/v4/b2_authorize_account",
+        {
+          headers: {
+            Authorization:
+              "Basic " +
+              Buffer.from(keyId + ":" + applicationKey).toString("base64"),
+          },
         },
-      },
-    );
+      );
+    } catch (e) {
+      if (
+        e.providerOperation === "b2_authorize_account" &&
+        e.providerCode === "bad_auth_token"
+      )
+        e.message = provisioning
+          ? "The provisioning key ID and application key did not authenticate as a matching pair"
+          : "The bucket key ID and application key did not authenticate as a matching pair";
+      throw e;
+    }
     const api = d.apiInfo?.storageApi;
     requireValue(
       api && d.accountId && d.authorizationToken,
@@ -244,10 +297,11 @@ export class BucketProvisioner {
     );
     return { ...input, bucketId: b.bucketId };
   }
-  async create(tenant, env, onBucket) {
+  async checkProvisioning(env) {
     const auth = await this.authorize(
       env.STORAGE_PROVISIONING_KEY_ID,
       env.STORAGE_PROVISIONING_APPLICATION_KEY,
+      true,
     );
     requireValue(
       !auth.allowed?.buckets?.length &&
@@ -258,6 +312,10 @@ export class BucketProvisioner {
       400,
       "Provisioning key needs unrestricted bucket creation and key creation permissions",
     );
+    return auth;
+  }
+  async create(tenant, env, onBucket) {
+    const auth = await this.checkProvisioning(env);
     const bucket = "sv-" + tenant.replaceAll("-", "");
     // Deterministic opaque name allows recovery after a timeout without creating another bucket.
     const list = await this.call(auth, "b2_list_buckets", {
