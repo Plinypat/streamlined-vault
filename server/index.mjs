@@ -1039,6 +1039,8 @@ const server = http.createServer(async (req, res) => {
         "style.css",
         "demo.js",
         "clerk-client.js",
+        "favicon.svg",
+        "favicon.ico",
       ].includes(file),
       404,
       "Not found",
@@ -1049,6 +1051,8 @@ const server = http.createServer(async (req, res) => {
         ".html": "text/html; charset=utf-8",
         ".js": "text/javascript; charset=utf-8",
         ".css": "text/css; charset=utf-8",
+        ".svg": "image/svg+xml",
+        ".ico": "image/x-icon",
       }[extname(file)],
     });
     res.end(contents);
