@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { resolve, join, extname } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { CloudStorage, LocalStorage } from './storage.mjs';
+import { createWorkspaceStorage } from './workspace-storage.mjs';
 import { createDevices } from './devices.mjs';
 import { createClerkAuth, contentSecurityPolicy } from './clerk-auth.mjs';
 
@@ -32,7 +32,7 @@ db.exec('CREATE UNIQUE INDEX IF NOT EXISTS upload_request_id ON files(tenant,req
 const q=(sql,...args)=>db.prepare(sql).all(...args), one=(sql,...args)=>db.prepare(sql).get(...args), run=(sql,...args)=>db.prepare(sql).run(...args);
 const hash=v=>createHash('sha256').update(v).digest('hex'), now=()=>new Date().toISOString(), id=()=>randomUUID();
 const msp=new Set((env.MSP_ADMINS||'admin@example.test').split(',').map(v=>v.trim().toLowerCase()));
-const storage=demo?new LocalStorage(join(data,'objects')):new CloudStorage(env);
+const workspaceStorage=createWorkspaceStorage({db,env,demo,data});
 const ready=demo||(env.PROVIDER_BAA_CONFIRMED==='true'&&env.HOSTING_APPROVED_FOR_PHI==='true'&&env.CLERK_BAA_CONFIRMED==='true');
 const PART=16*1024*1024, MAX=PART*10000;
 function audit(tenant,actor,action,resource=''){const previous=one('SELECT digest FROM audit ORDER BY rowid DESC LIMIT 1')?.digest||'';const a={id:id(),tenant,actor,action,resource,created:now(),previous};const digest=hash(JSON.stringify(a));run('INSERT INTO audit VALUES(?,?,?,?,?,?,?,?)',a.id,tenant,actor,action,resource,a.created,previous,digest);}
@@ -66,12 +66,20 @@ const server=http.createServer(async(req,res)=>{
     if(path.startsWith('/api/')){
       const user=await authenticate(req);
       if(path.startsWith('/api/device/'))return await devices.agent(req,res,user,path.slice('/api/device'.length));
-      if(path==='/api/me')return send(res,200,{...user,tenants:accessible(user).map(t=>({...t,used:usage(t.id),role:user.msp?'admin':one('SELECT role FROM members WHERE tenant=? AND email=?',t.id,user.email)?.role}))});
+      if(path==='/api/me')return send(res,200,{...user,...(user.msp?{storageCapabilities:workspaceStorage.capabilities()}:{}),tenants:accessible(user).map(t=>({...t,storage:workspaceStorage.view(t.id,user.msp),used:usage(t.id),role:user.msp?'admin':one('SELECT role FROM members WHERE tenant=? AND email=?',t.id,user.email)?.role}))});
       if(path==='/api/logout'&&method==='POST'){if(!demo)await clerkAuth.revoke(user.clerkSessionId);run('DELETE FROM sessions WHERE hash=?',user.sessionHash||'');res.setHeader('Set-Cookie',`ss_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${demo?'':'; Secure'}`);return send(res,200,{ok:true});}
-      if(path==='/api/tenants'&&method==='POST'){need(user.msp);const b=await body(req);need(typeof b.name==='string'&&b.name.trim().length>1&&b.name.length<=100,400,'Practice name is required');const tenant=id();run('INSERT INTO tenants VALUES(?,?,?,?)',tenant,b.name.trim(),4_000_000_000_000,'active');audit(tenant,user.email,'Workspace created');return send(res,201,{id:tenant});}
+      if(path==='/api/tenants'&&method==='POST'){
+        need(user.msp);const b=await body(req);need(typeof b.name==='string'&&b.name.trim().length>1&&b.name.length<=100,400,'Practice name is required');need(!b.requestId||/^[a-f0-9-]{36}$/.test(b.requestId),400,'Invalid setup request identifier');
+        const prior=b.requestId?one('SELECT * FROM storage_requests WHERE request_id=?',b.requestId):null;need(!prior||prior.name===b.name.trim(),409,'Setup request is already assigned to a different practice');const tenant=prior?.tenant||id();
+        if(prior&&workspaceStorage.view(tenant).kind==='dedicated'&&workspaceStorage.view(tenant).status==='ready'){run("UPDATE tenants SET status='active' WHERE id=? AND status IN ('storage_pending','storage_error')",tenant);return send(res,200,{id:tenant,storage:workspaceStorage.view(tenant,true)});}
+        workspaceStorage.input(b.storage,tenant);
+        if(!prior){db.exec('BEGIN IMMEDIATE');try{run('INSERT INTO tenants VALUES(?,?,?,?)',tenant,b.name.trim(),4_000_000_000_000,'storage_pending');if(b.requestId)run('INSERT INTO storage_requests VALUES(?,?,?)',b.requestId,tenant,b.name.trim());audit(tenant,user.email,'Workspace storage setup started');db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}}
+        try{const storage=await workspaceStorage.provision(tenant,b.storage);run("UPDATE tenants SET status='active' WHERE id=?",tenant);audit(tenant,user.email,'Dedicated workspace storage connected');return send(res,201,{id:tenant,storage});}catch(e){run("UPDATE tenants SET status='storage_error' WHERE id=?",tenant);audit(tenant,user.email,'Workspace storage setup needs attention');throw e;}
+      }
       const route=/^\/api\/tenants\/([^/]+)(.*)$/.exec(path);need(route,404,'Not found');const tenant=route[1],tail=route[2];const t=tenantAccess(user,tenant);
       if(tail==='/devices'||tail.startsWith('/devices/'))return await devices.portal(req,res,user,tenant,tail);
-      if(tail==='/settings'&&method==='PATCH'){need(user.msp);const b=await body(req);need(['active','suspended'].includes(b.status),400);run('UPDATE tenants SET status=? WHERE id=?',b.status,tenant);audit(tenant,user.email,'Workspace status changed',b.status);return send(res,200,{ok:true});}
+      if(tail==='/storage'&&method==='POST'){need(user.msp);const b=await body(req);const storage=await workspaceStorage.provision(tenant,b.storage);if(['storage_pending','storage_error'].includes(t.status))run("UPDATE tenants SET status='active' WHERE id=?",tenant);audit(tenant,user.email,'Dedicated workspace storage connected');return send(res,200,storage);}
+      if(tail==='/settings'&&method==='PATCH'){need(user.msp);need(workspaceStorage.view(tenant).status==='ready',409,'Complete storage setup first');const b=await body(req);need(['active','suspended'].includes(b.status),400);run('UPDATE tenants SET status=? WHERE id=?',b.status,tenant);audit(tenant,user.email,'Workspace status changed',b.status);return send(res,200,{ok:true});}
       if(tail==='/files'&&method==='GET'){need(t.role!=='uploader');return send(res,200,{files:q('SELECT * FROM files WHERE tenant=? AND status=? ORDER BY created DESC',tenant,url.searchParams.get('trash')==='true'?'trash':'ready').map(publicFile),used:usage(tenant),quota:t.quota});}
       if(tail==='/members'&&method==='GET'){tenantAccess(user,tenant,false,true);return send(res,200,q('SELECT email,role FROM members WHERE tenant=?',tenant));}
       if(tail==='/members'&&method==='POST'){tenantAccess(user,tenant,false,true);const b=await body(req);need(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email||'')&&['admin','editor','viewer','uploader'].includes(b.role),400,'Valid email and role required');run('INSERT INTO members VALUES(?,?,?) ON CONFLICT(tenant,email) DO UPDATE SET role=excluded.role',tenant,b.email.toLowerCase(),b.role);audit(tenant,user.email,'Member access assigned',b.role);return send(res,200,{ok:true});}
@@ -85,12 +93,12 @@ const server=http.createServer(async(req,res)=>{
         tenantAccess(user,tenant,true);need(ready,503,'Storage activation requires completed operator review');const b=await body(req);need(typeof b.name==='string'&&b.name.length>0&&b.name.length<=200&&!/[\x00-\x1f/\\]/.test(b.name),400,'Invalid file name');need(typeof b.folder==='string'&&b.folder.length<=200&&!/[\x00-\x1f]/.test(b.folder),400,'Invalid folder');need(Number.isSafeInteger(b.size)&&b.size>0&&b.size<=MAX,400,'File size must be between 1 byte and 160,000 MiB');
         need(!b.requestId||/^[a-f0-9-]{36}$/.test(b.requestId),400,'Invalid request identifier');
         if(b.requestId){const previous=one('SELECT * FROM files WHERE tenant=? AND requestid=?',tenant,b.requestId);if(previous){need(previous.name===b.name&&previous.size===b.size&&previous.folder===b.folder,409,'Request identifier already used');need(previous.upload,409,'Upload is still preparing; retry shortly');return send(res,200,{id:previous.id,partSize:PART,parts:Math.ceil(previous.size/PART)});}}
-        const fid=id(),key=`tenants/${tenant}/objects/${fid}`;
-        db.exec('BEGIN IMMEDIATE');try{need(usage(tenant)+b.size<=t.quota,409,'Workspace storage allowance exceeded');run('INSERT INTO files(id,tenant,name,folder,size,key,status,created,requestid) VALUES(?,?,?,?,?,?,?,?,?)',fid,tenant,b.name,b.folder,b.size,key,'uploading',now(),b.requestId||null);db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}
+        const fid=id(),key=`tenants/${tenant}/objects/${fid}`,storageTenant=workspaceStorage.location(tenant),storage=workspaceStorage.forFile({tenant,storage_tenant:storageTenant});
+        db.exec('BEGIN IMMEDIATE');try{need(usage(tenant)+b.size<=t.quota,409,'Workspace storage allowance exceeded');run('INSERT INTO files(id,tenant,name,folder,size,key,status,created,requestid,storage_tenant) VALUES(?,?,?,?,?,?,?,?,?,?)',fid,tenant,b.name,b.folder,b.size,key,'uploading',now(),b.requestId||null,storageTenant);db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}
         try{const upload=await storage.start(key);run('UPDATE files SET upload=? WHERE id=?',upload,fid);}catch(e){run('DELETE FROM files WHERE id=?',fid);throw e;}audit(tenant,user.email,'Upload started',fid);return send(res,201,{id:fid,partSize:PART,parts:Math.ceil(b.size/PART)});
       }
       const ur=/^\/uploads\/([^/]+)(?:\/(parts)(?:\/(\d+))?|\/(complete))?$/.exec(tail);
-      if(ur){tenantAccess(user,tenant,true);need(ready,503,'Storage not activated');const f=one('SELECT * FROM files WHERE id=? AND tenant=?',ur[1],tenant);need(f,404,'Upload not found');
+      if(ur){tenantAccess(user,tenant,true);need(ready,503,'Storage not activated');const f=one('SELECT * FROM files WHERE id=? AND tenant=?',ur[1],tenant);need(f,404,'Upload not found');const storage=workspaceStorage.forFile(f);
         if(method==='GET')return send(res,200,{id:f.id,name:f.name,size:f.size,status:f.status,partSize:PART,parts:q('SELECT number,size FROM parts WHERE file=?',f.id)});
         if(method==='POST'&&ur[4]&&f.status==='ready')return send(res,200,publicFile(f));
         need(['uploading','finishing'].includes(f.status),409,'Upload is no longer active');
@@ -100,7 +108,7 @@ const server=http.createServer(async(req,res)=>{
       }
       const fr=/^\/files\/([^/]+)(?:\/(download|restore))?$/.exec(tail);
       if(fr){need(t.role!=='uploader');const f=one('SELECT * FROM files WHERE id=? AND tenant=?',fr[1],tenant);need(f,404,'File not found');
-        if(method==='GET'&&fr[2]==='download'){need(f.status==='ready',404);need(ready,503,'Storage not activated');const range=req.headers.range;need(!range||/^bytes=\d+-\d*$/.test(range),416,'Unsupported range');const result=await storage.get(f.key,f.version,range);audit(tenant,user.email,'Download authorized',f.id);res.writeHead(range?206:200,{'Content-Type':'application/octet-stream','Content-Disposition':`attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(f.name).replace(/'/g,'%27')}`,'Content-Length':result.length,'Accept-Ranges':'bytes',...(result.range?{'Content-Range':result.range}:{})});await pipeline(result.body,res);return;}
+        if(method==='GET'&&fr[2]==='download'){need(f.status==='ready',404);need(ready,503,'Storage not activated');const range=req.headers.range;need(!range||/^bytes=\d+-\d*$/.test(range),416,'Unsupported range');const result=await workspaceStorage.forFile(f).get(f.key,f.version,range);audit(tenant,user.email,'Download authorized',f.id);res.writeHead(range?206:200,{'Content-Type':'application/octet-stream','Content-Disposition':`attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(f.name).replace(/'/g,'%27')}`,'Content-Length':result.length,'Accept-Ranges':'bytes',...(result.range?{'Content-Range':result.range}:{})});await pipeline(result.body,res);return;}
         if(method==='PATCH'){tenantAccess(user,tenant,true);need(f.status==='ready',409);const b=await body(req);need(typeof b.name==='string'&&b.name.length>0&&b.name.length<=200&&!/[\x00-\x1f/\\]/.test(b.name),400,'Invalid file name');run('UPDATE files SET name=? WHERE id=?',b.name,f.id);audit(tenant,user.email,'File renamed',f.id);return send(res,200,{ok:true});}
         if(method==='DELETE'){tenantAccess(user,tenant,true);need(f.status==='ready',409);run("UPDATE files SET status='trash' WHERE id=?",f.id);audit(tenant,user.email,'File moved to trash',f.id);return send(res,200,{ok:true});}
         if(method==='POST'&&fr[2]==='restore'){tenantAccess(user,tenant,true);need(f.status==='trash',409);run("UPDATE files SET status='ready' WHERE id=?",f.id);audit(tenant,user.email,'File restored',f.id);return send(res,200,{ok:true});}

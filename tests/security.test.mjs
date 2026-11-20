@@ -117,3 +117,20 @@ test('scheduled Python uploader transfers bytes, reports results and skips uncha
  files=(await request(base+'/files','GET',undefined,admin)).value.files;assert.equal(files.filter(f=>f.name==='synthetic-study.txt').length,1);
  const history=await request(`${base}/devices/${device.device}/runs`,'GET',undefined,admin);assert.equal(history.value.length,2);
 });
+
+test('new workspace retries reuse a dedicated bucket and uploader credentials route into it',async()=>{
+ const requestId='aaaaaaaa-1111-2222-3333-444444444444',payload={name:'Dedicated storage pilot',storage:{mode:'create'},requestId};
+ const created=await request('/api/tenants','POST',payload,admin);assert.equal(created.status,201);assert.equal(created.value.storage.kind,'dedicated');
+ const retry=await request('/api/tenants','POST',payload,admin);assert.equal(retry.status,200);assert.equal(retry.value.id,created.value.id);
+ const base=`/api/tenants/${created.value.id}`;
+ assert.equal((await request(base+'/storage','POST',{storage:{mode:'create'}},client)).status,403);
+ const token=await request(base+'/tokens','POST',{label:'Dedicated uploader',scope:'upload'},admin);const auth={Authorization:'Bearer '+token.value.token};
+ const bytes=Buffer.from('Synthetic dedicated bucket bytes'),started=await request(base+'/uploads','POST',{name:'dedicated.txt',folder:'Imaging',size:bytes.length,storage_tenant:'northside'},undefined,auth);assert.equal(started.status,201);
+ assert.equal((await request(`${base}/uploads/${started.value.id}/parts/1`,'PUT',bytes,undefined,{...auth,'X-Content-SHA256':createHash('sha256').update(bytes).digest('hex')})).status,200);
+ assert.equal((await request(`${base}/uploads/${started.value.id}/complete`,'POST',{},undefined,auth)).status,200);
+ const downloaded=await request(`${base}/files/${started.value.id}/download`,'GET',undefined,admin);assert.deepEqual(Buffer.from(downloaded.value),bytes);
+ assert.equal((await request(`/api/tenants/northside/files/${started.value.id}/download`,'GET',undefined,client)).status,404);
+ const duplicate=await request('/api/tenants','POST',{name:'Duplicate assignment',storage:{mode:'connect',bucket:created.value.storage.bucket}},admin);assert.equal(duplicate.status,409);
+ await request(base+'/members','POST',{email:'client@example.test',role:'viewer'},admin);
+ const me=await request('/api/me','GET',undefined,client),practice=me.value.tenants.find(t=>t.id===created.value.id);assert.deepEqual(practice.storage,{kind:'dedicated',status:'ready'});assert.ok(!me.value.storageCapabilities);
+});

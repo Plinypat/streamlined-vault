@@ -2,6 +2,7 @@
 const uid=()=>crypto.randomUUID(), now=()=>new Date().toISOString();
 const seedFiles=[['CT study — SAMPLE-001.zip','Imaging',842_000_000],['Panoramic scan — SAMPLE-002.dcm','Imaging',128_000_000],['Practice handbook.pdf','Documents',2_400_000],['Referral packet — SAMPLE.pdf','Documents',8_700_000],['Equipment inventory.xlsx','Operations',450_000]];
 const tenants=[{id:'northside',name:'Northside Medical',quota:4e12,status:'active'},{id:'oakvalley',name:'Oak Valley Dental',quota:4e12,status:'active'},{id:'lakeside',name:'Lakeside Imaging',quota:4e12,status:'active'}];
+tenants.forEach(t=>{t.storage={kind:'dedicated',status:'ready',bucket:'sv-preview-'+t.id,region:'Preview only',mode:'create'};});
 const files=tenants.flatMap(t=>seedFiles.map(([name,folder,size],i)=>({id:uid(),tenant:t.id,name,folder,size,status:'ready',created:new Date(Date.now()-(i+1)*3600000).toISOString(),sample:true})));
 const events=[],devices=tenants.flatMap(t=>[{id:uid(),tenant:t.id,label:'Imaging workstation',enrolled:true,policy:{folder:'Imaging',schedule:{kind:'interval',minutes:15}},paused:false,revoked:false,last_seen:now(),status:'idle',last_success:new Date(Date.now()-900000).toISOString(),created:now()}]),tokens=[],members=tenants.map(t=>({tenant:t.id,email:'client@example.test',role:'admin'})),blobs=new Map(),uploads=new Map();
 let user;
@@ -11,8 +12,8 @@ const used=t=>files.filter(f=>f.tenant===t&&['ready','trash','uploading'].includ
 export async function request(path,method='GET',b={}){
  if(path==='/auth/demo'){user={email:b.role==='msp'?'admin@example.test':'client@example.test',name:b.role==='msp'?'MSP Administrator':'Practice Administrator',msp:b.role==='msp',csrf:'demo'};return user;}
  if(path==='/api/logout'){user=null;return {ok:true};}
- if(path==='/api/me'){if(!user)throw Error('Please sign in');return {...user,tenants:tenants.map(t=>({...t,used:used(t.id),role:'admin'}))};}
- if(path==='/api/tenants'){const t={id:uid(),name:b.name,quota:4e12,status:'active'};tenants.push(t);event(t.id,'Workspace created');return t;}
+ if(path==='/api/me'){if(!user)throw Error('Please sign in');return {...user,...(user.msp?{storageCapabilities:{create:true,connect:true}}:{}),tenants:tenants.map(t=>({...t,storage:user.msp?t.storage:{kind:t.storage.kind,status:t.storage.status},used:used(t.id),role:'admin'}))};}
+ if(path==='/api/tenants'){const tid=uid(),t={id:tid,name:b.name,quota:4e12,status:'active',storage:{kind:'dedicated',status:'ready',bucket:b.storage?.bucket||'sv-preview-'+tid.slice(0,8),region:'Preview only',mode:b.storage?.mode||'create'}};tenants.push(t);event(t.id,'Workspace created');return t;}
  const m=/^\/api\/tenants\/([^/]+)(.*)$/.exec(path);if(!m)throw Error('Preview route unavailable');const t=m[1],suffix=m[2];
  if(suffix.startsWith('/files?')||suffix==='/files')return {files:files.filter(f=>f.tenant===t&&f.status===(suffix.includes('trash=true')?'trash':'ready')).map(f=>({...f})),used:used(t),quota:4e12};
  if(suffix==='/audit')return events.filter(e=>e.tenant===t);
