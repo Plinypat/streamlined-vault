@@ -472,6 +472,24 @@ export function createSecurityConsole({
     gates.criticalAlerts = !alerts.some(
       (a) => a.status === "open" && ["high", "critical"].includes(a.severity),
     );
+    const labels = {
+      database: "Database protection",
+      logIntegrity: "Log integrity",
+      auditArchive: "Protected audit archive",
+      scheduledMaintenance: "Scheduled security maintenance",
+      backups: "Hourly off-site backups",
+      recovery: "Isolated recovery drill",
+      keyCustody: "Recovery key custody",
+      mfa: "MFA and account recovery",
+      pilot: "Two-night practice pilot",
+      notifications: "Alert inbox receipt",
+      monitoring: "Independent monitoring",
+      access: "User and administrator access",
+      endpoint: "Practice computer protection",
+      credentialRotation: "Credential rotation review",
+      storage: "Private storage and browser transfers",
+      criticalAlerts: "Open critical alerts",
+    };
     const technicalReady = !demo && Object.values(gates).every(Boolean);
     return {
       technicalApproval: technicalReady && current("activation_review"),
@@ -498,7 +516,7 @@ export function createSecurityConsole({
       accessReview: await archive.setting("access_review"),
       remaining: Object.entries(gates)
         .filter(([, passed]) => !passed)
-        .map(([name]) => name + " verification pending"),
+        .map(([name]) => labels[name] + " verification pending"),
     };
   }
   async function acknowledge(id, actor) {
