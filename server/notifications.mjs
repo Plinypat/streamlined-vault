@@ -92,7 +92,14 @@ export function createNotifications({ db, env, fetcher = fetch }) {
               text: `${alertCategory(row.category)}\nSeverity: ${row.severity}\nTime: ${row.created}\nIncident: ${row.id}\nDashboard: ${origin}\nSign in and open Security & logs. No patient or file details are included.`,
             }),
           });
-          if (!r.ok) throw Error("Email request failed");
+          if (!r.ok) {
+            let reason='PROVIDER_REJECTED';
+            try {const result=await r.json(),message=String(result.message||'').toLowerCase();
+              reason=message.includes('domain')?'SENDING_DOMAIN_REVIEW':message.includes('from')?'SENDER_FORMAT_REVIEW':message.includes('api key')?'API_KEY_REVIEW':message.includes('testing')?'SENDING_ACCOUNT_REVIEW':'PROVIDER_REJECTED';
+            }catch{}
+            console.warn(JSON.stringify({event:'email_delivery_rejected',status:r.status||0,reason,incident:row.id}));
+            throw Error("Email request failed");
+          }
           const result = await r.json();
           if (typeof result.id !== "string")
             throw Error("Missing provider acceptance");
