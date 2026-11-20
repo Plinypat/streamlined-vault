@@ -3,6 +3,7 @@
 Run on a practice computer with a protected token file and a protected state file.
 Uploads new/changed files; never deletes cloud or source files. No provider credentials.
 """
+import base64
 import argparse, hashlib, json, os, sys, time, uuid, urllib.request, urllib.error
 from pathlib import Path
 
@@ -88,7 +89,23 @@ def run_upload(a, token=None, checkpoint=None):
                         paused=True;break
                     chunk=f.read(entry['partSize'])
                     if not chunk:break
-                    if n not in sent:call('/uploads/'+entry['upload']+'/parts/'+str(n),'PUT',chunk)
+                    if n not in sent:
+                        part='/uploads/'+entry['upload']+'/parts/'+str(n)
+                        if up.get('transport')=='direct':
+                            grant=call(part+'/sign','POST',{'md5':base64.b64encode(hashlib.md5(chunk).digest()).decode()})
+                            from urllib.parse import urlsplit
+                            target=urlsplit(grant['url'])
+                            if target.scheme!='https' or target.username or target.password or target.port not in (None,443) or not target.hostname or not target.hostname.endswith('.backblazeb2.com'):
+                                raise RuntimeError('Storage transfer endpoint is invalid')
+                            req=urllib.request.Request(grant['url'],data=chunk,method='PUT',headers={'Content-MD5':grant['headers']['Content-MD5']})
+                            class NoStorageRedirect(urllib.request.HTTPRedirectHandler):
+                                def redirect_request(self,*args,**kwargs):return None
+                            try:
+                                with urllib.request.build_opener(NoStorageRedirect).open(req,timeout=600) as response:
+                                    if response.status!=200:raise RuntimeError('Storage transfer failed')
+                            except Exception:raise RuntimeError('Storage transfer failed; retry on the next scheduled run') from None
+                            call(part+'/ack','POST',{})
+                        else:call(part,'PUT',chunk)
                     n+=1
             if paused:break
             current=path.stat()

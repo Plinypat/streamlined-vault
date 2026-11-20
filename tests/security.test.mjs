@@ -134,7 +134,7 @@ before(async () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
         ).version,
-        2,
+        3,
       );
       await migratePostgres(upgrade); // Repeat cold starts must leave data intact.
       await upgrade.run("DELETE FROM tenants WHERE id='upgrade-fixture'");
@@ -289,13 +289,28 @@ test("server quota reserves concurrent uploads and cancellation releases reserva
       admin,
     ),
     base = `/api/tenants/${start.value.id}`;
-  // 23 reservations at 160,000 MiB fit in 4 TB; the 24th does not.
+  assert.equal(
+    (await request("/api/config")).value.transferLimits.maxFileBytes,
+    50 * 1024 ** 3,
+  );
+  assert.equal(
+    (
+      await request(
+        base + "/uploads",
+        "POST",
+        { name: "too-large.bin", folder: "Test", size: 50 * 1024 ** 3 + 1 },
+        admin,
+      )
+    ).status,
+    400,
+  );
+  // 80 reservations at 50 decimal GB fill the 4 TB quota.
   let first;
-  for (let i = 0; i < 23; i++) {
+  for (let i = 0; i < 80; i++) {
     const r = await request(
       base + "/uploads",
       "POST",
-      { name: "reservation.bin", folder: "Test", size: 167772160000 },
+      { name: "reservation.bin", folder: "Test", size: 50_000_000_000 },
       admin,
     );
     assert.equal(r.status, 201);
@@ -306,7 +321,7 @@ test("server quota reserves concurrent uploads and cancellation releases reserva
       await request(
         base + "/uploads",
         "POST",
-        { name: "overflow.bin", folder: "Test", size: 167772160000 },
+        { name: "overflow.bin", folder: "Test", size: 50_000_000_000 },
         admin,
       )
     ).status,
@@ -321,7 +336,7 @@ test("server quota reserves concurrent uploads and cancellation releases reserva
       await request(
         base + "/uploads",
         "POST",
-        { name: "fits-again.bin", folder: "Test", size: 167772160000 },
+        { name: "fits-again.bin", folder: "Test", size: 50_000_000_000 },
         admin,
       )
     ).status,
@@ -910,20 +925,20 @@ test(
         ),
       );
       const reservations = await Promise.all(
-        Array.from({ length: 32 }, (_, i) =>
+        Array.from({ length: 96 }, (_, i) =>
           (i % 2 ? other : request)(
             base + "/uploads",
             "POST",
-            { name: `parallel-${i}.bin`, folder: "Test", size: 167772160000 },
+            { name: `parallel-${i}.bin`, folder: "Test", size: 50_000_000_000 },
             admin,
           ),
         ),
       );
-      assert.equal(reservations.filter((r) => r.status === 201).length, 23);
-      assert.equal(reservations.filter((r) => r.status === 409).length, 9);
+      assert.equal(reservations.filter((r) => r.status === 201).length, 80);
+      assert.equal(reservations.filter((r) => r.status === 409).length, 16);
       assert.equal(
         (await other(base + "/files")).value.used,
-        23 * 167772160000,
+        80 * 50_000_000_000,
       );
       const enrolled = await request(
         base + "/devices",
@@ -977,7 +992,7 @@ test(
       );
       assert.equal(
         (await request(base + "/files", "GET", undefined, admin)).value.used,
-        23 * 167772160000,
+        80 * 50_000_000_000,
       );
       const pool = new pg.Pool({ connectionString: testPostgres, ssl: false });
       try {
@@ -1285,4 +1300,43 @@ test("published hard download limits reserve concurrent traffic; drafts do not i
     stats.value.clients.find((t) => t.id === created.value.id).meter
       .downloadedBytes <= 10,
   );
+});
+
+test("direct transfer routes enforce identity, tenant access and CSRF", async () => {
+  const privateWorkspace = await request(
+    "/api/tenants",
+    "POST",
+    { name: "Direct route isolation" },
+    admin,
+  );
+  assert.equal(privateWorkspace.status, 201);
+  for (const suffix of [
+    "/uploads/missing/parts/1/sign",
+    "/uploads/missing/parts/1/ack",
+    "/files/missing/download-link",
+  ]) {
+    assert.equal(
+      (await request("/api/tenants/northside" + suffix, "POST", {})).status,
+      401,
+    );
+    assert.equal(
+      (
+        await request("/api/tenants/northside" + suffix, "POST", {}, admin, {
+          "X-CSRF-Token": "wrong",
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await request(
+          "/api/tenants/" + privateWorkspace.value.id + suffix,
+          "POST",
+          {},
+          client,
+        )
+      ).status,
+      403,
+    );
+  }
 });

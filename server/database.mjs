@@ -25,6 +25,7 @@ const tables = [
   "workspace_plans",
   "transfer_events",
   "provider_inventory",
+  "upload_part_grants",
 ];
 export function postgresSql(sql) {
   let n = 0;
@@ -170,6 +171,7 @@ CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,titl
 const migrations = [
   { version: 1, file: "001-metadata.sql" },
   { version: 2, file: "002-msp-console.sql" },
+  { version: 3, file: "003-direct-transfers.sql" },
 ];
 export async function migratePostgres(db) {
   try {
@@ -243,6 +245,12 @@ export async function openDatabase({ env, demo, data }) {
       .replace(/^ALTER TABLE[^;]+;\s*/gm, "")
       .replaceAll("streamlined_vault.", "");
     await db.exec(consoleSchema);
+    await db.exec(
+      readFileSync(
+        new URL("./migrations/003-direct-transfers.sql", import.meta.url),
+        "utf8",
+      ).replaceAll("streamlined_vault.", ""),
+    );
   }
   return db;
 }

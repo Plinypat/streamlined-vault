@@ -435,7 +435,7 @@ function renderMspOverview() {
     p = m.provider,
     snapshot = p.snapshot;
   $("#pagebody").innerHTML =
-    `<div class="stats">${metric("Client storage", bytes(m.totals.used), "Portal quota usage; includes trash and unfinished uploads")}${metric("Client workspaces", String(m.totals.clients), "Your private MSP workspace is listed separately")}${metric("Downloads this month", bytes(m.totals.downloadedBytes), m.period + " UTC · portal-streamed bytes")}${metric("Provider inventory", snapshot ? bytes(snapshot.bytes) : "Not scanned", snapshot ? "Completed object versions as of " + date(snapshot.capturedAt) : "Refresh to measure account-wide retained storage")}</div><div class="card"><div class="cardhead"><h2>Client workspace usage</h2><button data-action="newclient">Add practice</button></div><div class="tablewrap"><table><thead><tr><th>Practice</th><th>Storage / allowance</th><th>Uploaded this month</th><th>Downloaded this month</th><th>Storage status</th><th></th></tr></thead><tbody>${m.clients.map((t) => `<tr><td><strong>${esc(t.name)}</strong><small>${esc(t.status)}</small></td><td>${bytes(t.used)} / ${bytes(t.quota)}<div class="storagebar"><i style="width:${Math.min(100, (100 * t.used) / t.quota)}%"></i></div></td><td>${bytes(t.meter.uploadedBytes)}</td><td>${bytes(t.meter.downloadedBytes)}</td><td>${esc(t.storage.status)}</td><td><button data-client="${t.id}">Open workspace</button></td></tr>`).join("") || '<tr><td colspan="6">No client workspaces yet.</td></tr>'}</tbody></table></div></div><div class="detailgrid section"><div class="card section-panel"><div class="cardhead"><h2>Provider storage inventory</h2><button data-action="providerinventory" ${inventoryBusy ? "disabled" : ""}>${inventoryBusy ? "Scanning…" : p.status === "scanning" ? "Continue scan" : "Refresh inventory"}</button></div><div class="panel-content"><p>${snapshot ? `<strong>${bytes(snapshot.bytes)}</strong> across ${snapshot.buckets.length} buckets and ${snapshot.versions.toLocaleString()} completed object versions.` : "No completed inventory scan yet."}</p><p>This scan includes all buckets visible to the account credential, including stored versions outside the portal. Unfinished multipart parts are excluded. Scans are point-in-time estimates and do not represent monthly average storage or your invoice.</p>${p.status === "scanning" ? '<div class="notice">Scan in progress. The last completed snapshot remains displayed; continue the scan if you leave this page.</div>' : ""}${p.status === "error" ? '<div class="notice">The last scan needs attention. Its previous completed snapshot remains available.</div>' : ""}${snapshot?.buckets.length ? `<details><summary>Bucket breakdown</summary>${snapshot.buckets.map((b) => `<div class="row"><span>${esc(b.name)}</span><strong>${bytes(b.bytes)}</strong></div>`).join("")}</details>` : ""}</div></div><div class="card section-panel"><div class="cardhead"><h2>Your private MSP workspace</h2><button data-nav="MSP settings">MSP settings</button></div><div class="panel-content">${m.internal.length ? m.internal.map((t) => `<h3>${esc(t.name)}</h3><p>${bytes(t.used)} used · ${esc(t.storage.status)}</p><button data-internal="${t.id}">Open my workspace</button>`).join("") : "<p>Create your own private workspace and dedicated bucket from MSP settings. It is kept separate from client workspaces.</p>"}<p>Portal transfer tracking started ${date(m.trackingSince)}. Retries and range downloads count as traffic. Direct provider traffic, API fees and hosting charges require separate billing reconciliation.</p></div></div></div>`;
+    `<div class="stats">${metric("Client storage", bytes(m.totals.used), "Portal quota usage; includes trash and unfinished uploads")}${metric("Client workspaces", String(m.totals.clients), "Your private MSP workspace is listed separately")}${metric("Downloads this month", bytes(m.totals.downloadedBytes), m.period + " UTC · authorized download bytes")}${metric("Provider inventory", snapshot ? bytes(snapshot.bytes) : "Not scanned", snapshot ? "Completed object versions as of " + date(snapshot.capturedAt) : "Refresh to measure account-wide retained storage")}</div><div class="card"><div class="cardhead"><h2>Client workspace usage</h2><button data-action="newclient">Add practice</button></div><div class="tablewrap"><table><thead><tr><th>Practice</th><th>Storage / allowance</th><th>Uploaded this month</th><th>Downloaded this month</th><th>Storage status</th><th></th></tr></thead><tbody>${m.clients.map((t) => `<tr><td><strong>${esc(t.name)}</strong><small>${esc(t.status)}</small></td><td>${bytes(t.used)} / ${bytes(t.quota)}<div class="storagebar"><i style="width:${Math.min(100, (100 * t.used) / t.quota)}%"></i></div></td><td>${bytes(t.meter.uploadedBytes)}</td><td>${bytes(t.meter.downloadedBytes)}</td><td>${esc(t.storage.status)}</td><td><button data-client="${t.id}">Open workspace</button></td></tr>`).join("") || '<tr><td colspan="6">No client workspaces yet.</td></tr>'}</tbody></table></div></div><div class="detailgrid section"><div class="card section-panel"><div class="cardhead"><h2>Provider storage inventory</h2><button data-action="providerinventory" ${inventoryBusy ? "disabled" : ""}>${inventoryBusy ? "Scanning…" : p.status === "scanning" ? "Continue scan" : "Refresh inventory"}</button></div><div class="panel-content"><p>${snapshot ? `<strong>${bytes(snapshot.bytes)}</strong> across ${snapshot.buckets.length} buckets and ${snapshot.versions.toLocaleString()} completed object versions.` : "No completed inventory scan yet."}</p><p>This scan includes all buckets visible to the account credential, including stored versions outside the portal. Unfinished multipart parts are excluded. Scans are point-in-time estimates and do not represent monthly average storage or your invoice.</p>${p.status === "scanning" ? '<div class="notice">Scan in progress. The last completed snapshot remains displayed; continue the scan if you leave this page.</div>' : ""}${p.status === "error" ? '<div class="notice">The last scan needs attention. Its previous completed snapshot remains available.</div>' : ""}${snapshot?.buckets.length ? `<details><summary>Bucket breakdown</summary>${snapshot.buckets.map((b) => `<div class="row"><span>${esc(b.name)}</span><strong>${bytes(b.bytes)}</strong></div>`).join("")}</details>` : ""}</div></div><div class="card section-panel"><div class="cardhead"><h2>Your private MSP workspace</h2><button data-nav="MSP settings">MSP settings</button></div><div class="panel-content">${m.internal.length ? m.internal.map((t) => `<h3>${esc(t.name)}</h3><p>${bytes(t.used)} used · ${esc(t.storage.status)}</p><button data-internal="${t.id}">Open my workspace</button>`).join("") : "<p>Create your own private workspace and dedicated bucket from MSP settings. It is kept separate from client workspaces.</p>"}<p>Portal transfer tracking started ${date(m.trackingSince)}. Retries and range downloads count as traffic. Direct provider traffic, API fees and hosting charges require separate billing reconciliation.</p></div></div></div>`;
 }
 function planFields(p = {}) {
   return `<div class="plan-form"><label class="field">Included downloads per month (TB, decimal)<input id="plan-download" type="number" min="0" step="0.1" value="${p.downloadLimitBytes === null || p.downloadLimitBytes === undefined ? "" : p.downloadLimitBytes / 1e12}" placeholder="Not set"></label><label class="field">When the download allowance is reached<select id="plan-mode"><option value="notice" ${p.downloadMode !== "block" ? "selected" : ""}>Show allowance and overage information</option><option value="block" ${p.downloadMode === "block" ? "selected" : ""}>Block further downloads until reviewed</option></select></label><label class="field">Download overage price (USD per GB)<input id="plan-download-rate" type="number" min="0" step="0.01" value="${p.downloadOverageCentsPerGB === null || p.downloadOverageCentsPerGB === undefined ? "" : p.downloadOverageCentsPerGB / 100}" placeholder="Not set"></label><label class="field">Additional storage price (USD per TB/month, by agreement)<input id="plan-storage-rate" type="number" min="0" step="0.01" value="${p.storageUpgradeCentsPerTB === null || p.storageUpgradeCentsPerTB === undefined ? "" : p.storageUpgradeCentsPerTB / 100}" placeholder="Not set"></label><label class="field">Additional services and terms<textarea id="plan-services" rows="4" maxlength="2000">${esc(p.additionalServices || "")}</textarea></label><label class="publish-plan"><input id="plan-published" type="checkbox" ${p.published ? "checked" : ""}> Publish these terms to clients</label><p>Empty prices remain “contact your administrator.” Saving terms does not create invoices, charge cards or expand storage quotas.</p></div>`;
@@ -472,7 +472,7 @@ function renderPlan() {
           )
         : null;
   $("#pagebody").innerHTML =
-    `<div class="stats">${metric("Storage allowance", bytes(r.storageLimitBytes), bytes(t.used || 0) + " used, including trash and upload reservations")}${metric("Maximum per file", fileLimit(r.maxFileBytes), config.transferLimits?.pilot ? "Current pilot limit" : "Current supported file limit")}${metric("Downloaded this month", bytes(m.downloadedBytes), m.period + " UTC · tracked since " + date(m.trackingSince))}${metric("Included monthly downloads", p.published && p.downloadLimitBytes !== null ? bytes(p.downloadLimitBytes) : "Not published", remaining === null ? "Contact your storage administrator" : bytes(remaining) + " currently available")}</div><div class="detailgrid"><div class="card section-panel"><div class="cardhead"><h2>${t.kind === "internal" ? "Private workspace usage" : "Allowances and additional services"}</h2>${user.msp && t.kind !== "internal" ? '<button data-action="editworkspaceplan">Edit client plan</button>' : ""}</div><div class="panel-content">${p.published ? `<div class="row"><span>Download overage</span><strong>${p.downloadOverageCentsPerGB === null ? "By agreement" : dollars(p.downloadOverageCentsPerGB) + " / GB"}</strong></div><div class="row"><span>Additional storage</span><strong>${p.storageUpgradeCentsPerTB === null ? "By agreement" : dollars(p.storageUpgradeCentsPerTB) + " / TB/month"}</strong></div><p>${p.downloadMode === "block" ? "Further downloads are blocked when the monthly allowance is reached." : "Downloads above the included amount may require additional service charges under your published agreement."}</p><p class="plan-terms">${esc(p.additionalServices)}</p>` : "<p>Transfer allowances and additional-service prices have not been published. Contact your administrator before arranging bulk restores, migrations or additional capacity.</p>"}<p>The portal does not automatically invoice or charge for overages.</p></div></div><div class="card section-panel"><div class="cardhead"><h2>How usage is counted</h2></div><div class="panel-content"><ul><li>Files in trash and space reserved for unfinished uploads count toward storage.</li><li>Range downloads, repeated downloads and transfer retries can add traffic.</li><li>Uploads this month: ${bytes(m.uploadedBytes)}. In-progress download reservations: ${bytes(m.reservedDownloadBytes)}.</li><li>Traffic shown here covers transfers through this portal, not outside services.</li><li>Browser upload resume lasts for the current page session; the scheduled uploader keeps its own resume state.</li></ul>${config.transferLimits?.pilot ? '<div class="notice">This pilot currently supports files up to 4 MiB. Large imaging transfers require the next transfer rollout and acceptance testing.</div>' : ""}<p>Request approval before additional storage, assisted restoration, extended retention or migration work.</p></div></div></div>`;
+    `<div class="stats">${metric("Storage allowance", bytes(r.storageLimitBytes), bytes(t.used || 0) + " used, including trash and upload reservations")}${metric("Maximum per file", fileLimit(r.maxFileBytes), config.transferLimits?.pilot ? "Current pilot limit" : "Configured file limit")}${metric("Downloaded this month", bytes(m.downloadedBytes), m.period + " UTC · tracked since " + date(m.trackingSince))}${metric("Included monthly downloads", p.published && p.downloadLimitBytes !== null ? bytes(p.downloadLimitBytes) : "Not published", remaining === null ? "Contact your storage administrator" : bytes(remaining) + " currently available")}</div><div class="detailgrid"><div class="card section-panel"><div class="cardhead"><h2>${t.kind === "internal" ? "Private workspace usage" : "Allowances and additional services"}</h2>${user.msp && t.kind !== "internal" ? '<button data-action="editworkspaceplan">Edit client plan</button>' : ""}</div><div class="panel-content">${p.published ? `<div class="row"><span>Download overage</span><strong>${p.downloadOverageCentsPerGB === null ? "By agreement" : dollars(p.downloadOverageCentsPerGB) + " / GB"}</strong></div><div class="row"><span>Additional storage</span><strong>${p.storageUpgradeCentsPerTB === null ? "By agreement" : dollars(p.storageUpgradeCentsPerTB) + " / TB/month"}</strong></div><p>${p.downloadMode === "block" ? "Further downloads are blocked when the monthly allowance is reached." : "Downloads above the included amount may require additional service charges under your published agreement."}</p><p class="plan-terms">${esc(p.additionalServices)}</p>` : "<p>Transfer allowances and additional-service prices have not been published. Contact your administrator before arranging bulk restores, migrations or additional capacity.</p>"}<p>The portal does not automatically invoice or charge for overages.</p></div></div><div class="card section-panel"><div class="cardhead"><h2>How usage is counted</h2></div><div class="panel-content"><ul><li>Files in trash and space reserved for unfinished uploads count toward storage.</li><li>Range downloads, repeated downloads and transfer retries can add traffic.</li><li>Uploads this month: ${bytes(m.uploadedBytes)}. In-progress download reservations: ${bytes(m.reservedDownloadBytes)}.</li><li>Usage covers portal-authorized transfers, not activity outside this service.</li><li>Browser upload resume lasts for the current page session; the scheduled uploader keeps its own resume state.</li></ul>${config.transferLimits?.direct ? '<div class="notice">Large files transfer using short-lived links. Upload usage counts confirmed parts, excluding repeated attempts. Downloads count the full file when a link is issued; an unused link still counts. Links expire after 60 seconds but may be reused until then. Download controls limit new link issuance, not exact network traffic. Actual provider billing may differ.</div>' : ""}<p>Request approval before additional storage, assisted restoration, extended retention or migration work.</p></div></div></div>`;
 }
 function renderFiles() {
   const folders = [...new Set(data.files.map((f) => f.folder || "General"))];
@@ -688,7 +688,7 @@ function workspaceDialog(existing, kind = "client") {
 function renderSettings() {
   const t = user.tenants.find((t) => t.id === tenant);
   $("#pagebody").innerHTML =
-    `<div class="detailgrid"><div class="card"><div class="cardhead"><h2>Workspace details</h2><button data-nav="Plan & usage">Plan & usage</button></div>${[
+    `<div class="detailgrid"><div class="card"><div class="cardhead"><h2>Workspace details</h2><button data-nav="Plan & usage">Plan & usage</button></div>${user.msp ? `<div class="card section-panel"><div class="panel-content"><h3>Large browser transfers</h3><p>Allow this portal’s HTTPS origin to transfer file parts directly into the private bucket. This does not make files public.</p><button data-browsertransfers="${tenant}">Configure browser transfers</button></div></div>` : ""}${[
       ["Workspace", t.name],
       ["Storage allowance", "4 TB · 4,000,000,000,000 bytes"],
       [
@@ -770,10 +770,10 @@ function wireDrop() {
 function uploadDialog(selected = []) {
   modal(
     "A new home for your files.",
-    `<p>${config.demo ? "Select synthetic files only." : "Choose files to upload to this practice."}</p><p>Maximum per file: <strong>${fileLimit(config.transferLimits?.maxFileBytes || 167772160000)}</strong>. <button data-nav="Plan & usage">View plan limits</button></p>${field("Destination folder", "uploadfolder", folder === "All folders" ? "General" : folder)}<button id="browsefiles" style="width:100%">${icon("upload")}Choose files</button><p id="selectedfiles" style="margin-top:12px">${selected.length ? selected.length + " file(s) selected" : "No files selected"}</p>${config.demo ? "<p>Synthetic preview: use small files without patient data.</p>" : ""}`,
+    `<p>${config.demo ? "Select synthetic files only." : "Choose files to upload to this practice."}</p><p>Maximum per file: <strong>${fileLimit(config.transferLimits?.maxFileBytes || 50 * 1024 ** 3)}</strong>. <button data-nav="Plan & usage">View plan limits</button></p>${field("Destination folder", "uploadfolder", folder === "All folders" ? "General" : folder)}<button id="browsefiles" style="width:100%">${icon("upload")}Choose files</button><p id="selectedfiles" style="margin-top:12px">${selected.length ? selected.length + " file(s) selected" : "No files selected"}</p>${config.demo ? "<p>Synthetic preview: use small files without patient data.</p>" : ""}`,
     async () => {
       if (!selected.length) throw Error("Choose at least one file");
-      const maximum = config.transferLimits?.maxFileBytes || 167772160000;
+      const maximum = config.transferLimits?.maxFileBytes || 50 * 1024 ** 3;
       if (selected.some((f) => f.size > maximum))
         throw Error(
           "A selected file exceeds the current " +
@@ -823,9 +823,11 @@ async function processUpload(t) {
         folder: t.folder,
         size: t.file.size,
         requestId: t.local,
+        browser: true,
       });
       t.id = u.id;
       t.partSize = u.partSize;
+      t.transport = u.transport;
     }
     for (
       let offset = 0, n = 1;
@@ -844,12 +846,40 @@ async function processUpload(t) {
       let failure;
       for (let retry = 0; retry < 3; retry++) {
         try {
-          await api(
-            `/api/tenants/${t.tenant}/uploads/${t.id}/parts/${n}`,
-            "PUT",
-            b,
-            true,
-          );
+          if (t.transport === "direct") {
+            const md5 = btoa(
+              SparkMD5.ArrayBuffer.hash(await b.arrayBuffer(), true),
+            );
+            const grant = await api(
+              `/api/tenants/${t.tenant}/uploads/${t.id}/parts/${n}/sign`,
+              "POST",
+              { md5 },
+            );
+            const response = await fetch(grant.url, {
+              method: "PUT",
+              body: b,
+              headers: grant.headers,
+              credentials: "omit",
+              referrerPolicy: "no-referrer",
+              redirect: "error",
+            });
+            if (!response.ok)
+              throw Error(
+                "Storage transfer failed. Retry the upload or contact your administrator.",
+              );
+            await api(
+              `/api/tenants/${t.tenant}/uploads/${t.id}/parts/${n}/ack`,
+              "POST",
+              {},
+            );
+          } else {
+            await api(
+              `/api/tenants/${t.tenant}/uploads/${t.id}/parts/${n}`,
+              "PUT",
+              b,
+              true,
+            );
+          }
           failure = null;
           break;
         } catch (e) {
@@ -887,7 +917,20 @@ async function download(fid) {
     saveBlob(d.blob, d.name);
     toast("Demo download prepared");
   } else {
-    location.assign(base() + `/files/${fid}/download`);
+    if (config.transferLimits?.direct) {
+      const link = await api(
+        base() + `/files/${fid}/download-link`,
+        "POST",
+        {},
+      );
+      const anchor = document.createElement("a");
+      anchor.href = link.url;
+      anchor.rel = "noreferrer";
+      anchor.referrerPolicy = "no-referrer";
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+    } else location.assign(base() + `/files/${fid}/download`);
   }
 }
 function saveBlob(blob, name) {
@@ -1060,6 +1103,14 @@ document.addEventListener("click", async (e) => {
     if (d.action === "newclient") return workspaceDialog();
     if (d.storagesetup)
       return workspaceDialog(user.tenants.find((t) => t.id === d.storagesetup));
+    if (d.browsertransfers) {
+      await api(
+        `/api/tenants/${d.browsertransfers}/storage/browser-transfers`,
+        "POST",
+        {},
+      );
+      return toast("Browser transfers configured");
+    }
     if (d.action === "invite")
       return modal(
         "Add practice access",
@@ -1212,7 +1263,11 @@ async function boot() {
       config = {
         demo: true,
         ready: false,
-        transferLimits: { maxFileBytes: 4 * 1024 * 1024, pilot: true },
+        transferLimits: {
+          maxFileBytes: 50 * 1024 ** 3,
+          pilot: false,
+          direct: false,
+        },
       };
       demoAPI = await import("./demo.js");
     } else throw Error("Portal configuration unavailable");

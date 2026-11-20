@@ -1,3 +1,4 @@
+import { createDirectTransfers } from "./direct-transfers.mjs";
 import http from "node:http";
 import { openDatabase } from "./database.mjs";
 import {
@@ -96,10 +97,9 @@ const ready =
     env.HOSTING_APPROVED_FOR_PHI === "true" &&
     env.CLERK_BAA_CONFIRMED === "true" &&
     env.NEON_BAA_CONFIRMED === "true");
-const pilotTransfer =
-  env.NODE_ENV !== "test" && (demo || !!(env.VERCEL || env.VERCEL_ENV));
-const PART = 16 * 1024 * 1024,
-  MAX = pilotTransfer ? 4 * 1024 * 1024 : PART * 10000;
+const PART = 16 * 1024 * 1024;
+const MAX = 50 * 1024 ** 3;
+const pilotTransfer = false;
 async function audit(tenant, actor, action, resource = "") {
   return db.transaction(async () => {
     await db.lock("audit:chain");
@@ -382,6 +382,13 @@ const mspConsole = await createMspConsole({
   maxFileBytes: MAX,
   audit,
 });
+const directTransfers = createDirectTransfers({
+  db,
+  workspaceStorage,
+  mspConsole,
+  partSize: PART,
+  audit,
+});
 const limits = new Map();
 const server = http.createServer(async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
@@ -390,7 +397,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader(
     "Content-Security-Policy",
-    contentSecurityPolicy(clerkAuth?.config.frontendApi),
+    contentSecurityPolicy(clerkAuth?.config.frontendApi, !demo),
   );
   if (!demo)
     res.setHeader(
@@ -416,7 +423,12 @@ const server = http.createServer(async (req, res) => {
         ready,
         brand: "Streamlined Vault",
         partSize: PART,
-        transferLimits: { maxFileBytes: MAX, pilot: pilotTransfer },
+        transferLimits: {
+          maxFileBytes: MAX,
+          pilot: pilotTransfer,
+          direct: !demo,
+          linkExpirySeconds: 60,
+        },
         auth: demo ? "demo" : "clerk",
         ...(clerkAuth
           ? {
@@ -667,6 +679,12 @@ const server = http.createServer(async (req, res) => {
         );
         return send(res, 200, storage);
       }
+      if (tail === "/storage/browser-transfers" && method === "POST") {
+        need(user.msp);
+        await workspaceStorage.prepareBrowser(tenant);
+        await audit(tenant, user.email, "Browser transfer origin configured");
+        return send(res, 200, { ok: true });
+      }
       if (tail === "/settings" && method === "PATCH") {
         need(user.msp);
         need(
@@ -868,6 +886,8 @@ const server = http.createServer(async (req, res) => {
             tenant,
             storage_tenant: storageTenant,
           });
+        if (b.browser && storage.transport === "direct")
+          await workspaceStorage.prepareBrowser(tenant);
         const previous = await db.transaction(async () => {
           await db.lock("tenant:" + tenant);
           if (b.requestId) {
@@ -914,6 +934,7 @@ const server = http.createServer(async (req, res) => {
         if (previous)
           return send(res, 200, {
             id: previous.id,
+            transport: storage.transport || "proxy",
             partSize: PART,
             parts: Math.ceil(previous.size / PART),
           });
@@ -927,9 +948,35 @@ const server = http.createServer(async (req, res) => {
         await audit(tenant, user.email, "Upload started", fid);
         return send(res, 201, {
           id: fid,
+          transport: storage.transport || "proxy",
           partSize: PART,
           parts: Math.ceil(b.size / PART),
         });
+      }
+      const directPart = /^\/uploads\/([^/]+)\/parts\/(\d+)\/(sign|ack)$/.exec(
+        tail,
+      );
+      if (directPart && method === "POST") {
+        await tenantAccess(user, tenant, true);
+        need(ready, 503, "Storage not activated");
+        const input = await body(req);
+        const value = await db.transaction(async () => {
+          await db.lock("file:" + directPart[1]);
+          await tenantAccess(user, tenant, true);
+          const file = await one(
+            "SELECT * FROM files WHERE id=? AND tenant=?",
+            directPart[1],
+            tenant,
+          );
+          need(file, 404, "Upload not found");
+          return await directTransfers.part(
+            file,
+            Number(directPart[2]),
+            directPart[3],
+            input,
+          );
+        });
+        return send(res, 200, value);
       }
       const ur =
         /^\/uploads\/([^/]+)(?:\/(parts)(?:\/(\d+))?|\/(complete))?$/.exec(
@@ -967,6 +1014,8 @@ const server = http.createServer(async (req, res) => {
                 name: f.name,
                 size: f.size,
                 status: f.status,
+                transport:
+                  (await workspaceStorage.forFile(f)).transport || "proxy",
                 partSize: PART,
                 parts: await q(
                   "SELECT number,size FROM parts WHERE file=?",
@@ -1010,6 +1059,7 @@ const server = http.createServer(async (req, res) => {
               409,
               "Upload is incomplete",
             );
+            await directTransfers.verify(f, parts);
             await run("UPDATE files SET status='finishing' WHERE id=?", f.id);
             return { finish: true, file: f, parts };
           }
@@ -1052,6 +1102,7 @@ const server = http.createServer(async (req, res) => {
           await (await workspaceStorage.forFile(f)).abort(f.key, f.upload);
           await db.transaction(async () => {
             await db.lock("file:" + f.id);
+            await run("DELETE FROM upload_part_grants WHERE file=?", f.id);
             await run("DELETE FROM parts WHERE file=?", f.id);
             await run(
               "DELETE FROM files WHERE id=? AND status='canceling'",
@@ -1063,7 +1114,8 @@ const server = http.createServer(async (req, res) => {
         }
         return send(res, 200, result.value);
       }
-      const fr = /^\/files\/([^/]+)(?:\/(download|restore))?$/.exec(tail);
+      const fr =
+        /^\/files\/([^/]+)(?:\/(download|download-link|restore))?$/.exec(tail);
       if (fr) {
         need(t.role !== "uploader");
         const f = await one(
@@ -1072,9 +1124,21 @@ const server = http.createServer(async (req, res) => {
           tenant,
         );
         need(f, 404, "File not found");
+        if (method === "POST" && fr[2] === "download-link") {
+          need(f.status === "ready", 404);
+          need(ready, 503, "Storage not activated");
+          return send(res, 200, await directTransfers.download(f, user.email));
+        }
         if (method === "GET" && fr[2] === "download") {
           need(f.status === "ready", 404);
           need(ready, 503, "Storage not activated");
+          const adapter = await workspaceStorage.forFile(f);
+          if (adapter.transport === "direct") {
+            const link = await directTransfers.download(f, user.email);
+            res.writeHead(302, { Location: link.url });
+            res.end();
+            return;
+          }
           const range = req.headers.range;
           need(
             !range || /^bytes=\d+-\d*$/.test(range),
@@ -1166,6 +1230,7 @@ const server = http.createServer(async (req, res) => {
         "style.css",
         "demo.js",
         "clerk-client.js",
+        "spark-md5.min.js",
         "favicon.svg",
         "favicon.ico",
       ].includes(file),

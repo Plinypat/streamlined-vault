@@ -89,7 +89,7 @@ const policyFor = (t) =>
   t.kind === "internal" ? { published: false } : plans.get(t.id) || defaultPlan;
 const planFor = (t) => ({
   storageLimitBytes: t.quota,
-  maxFileBytes: 4 * 1024 * 1024,
+  maxFileBytes: 50 * 1024 ** 3,
   meter: meter(t.id),
   policy: policyFor(t).published ? policyFor(t) : { published: false },
   billingAutomatic: false,

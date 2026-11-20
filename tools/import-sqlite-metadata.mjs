@@ -34,6 +34,7 @@ const order = [
   "workspace_plans",
   "transfer_events",
   "provider_inventory",
+  "upload_part_grants",
 ];
 let source, db;
 try {

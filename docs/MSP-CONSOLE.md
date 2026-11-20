@@ -10,11 +10,11 @@ Refresh inventory performs read-only account-wide bucket/version listing with th
 
 Plan & usage shows each client's storage allowance, actual supported per-file limit and monthly portal traffic. Default download allowances and prices begin unpublished. MSPs can publish default terms or a workspace override: monthly downloads, notice or hard-block behavior, USD download overage per decimal GB, additional monthly storage per decimal TB, and other services. A hard block requires an explicit allowance. Private MSP workspaces do not inherit client billing terms. Saving or publishing terms does not create invoices or charge cards. Operational support, retention and migration fees require an agreement and separate billing.
 
-Traffic tracking begins when this release first starts, using UTC calendar months. Upload traffic includes received retries and rejected part checksums. Download traffic counts bytes passed through the portal's streaming meter, including ranges and retries; it is not proof of receipt. Concurrent hard limits reserve planned download bytes transactionally before provider access. Reservations expire after one hour if a worker never finalizes; a later attempt releases them. Crashes can leave actual bytes undercounted. Direct provider traffic, failed proxy paths, hosting overhead and API charges require separate billing reconciliation. This meter is for service visibility and controls, not authoritative invoicing.
+Traffic tracking begins when the meter release first starts, using UTC calendar months. Proxy uploads count received bytes; direct uploads count confirmed provider parts once, excluding retry traffic. Proxy downloads count streamed bytes, while direct downloads count the full file when a link is authorized, even if unused. Short-lived links can be reused before expiry. Hard limits govern new download authorizations, not exact traffic. Failed or repeated direct traffic and activity outside the portal require provider billing reconciliation. This meter is for visibility and service controls, not authoritative invoicing.
 
-## Pilot transfer boundary
+## Large-file transfer boundary
 
-Vercel and development previews currently enforce **4 MiB per file**, below Vercel's 4.5 MB request-body limit. The browser and API both enforce and display it. Large imaging files are not ready for production acceptance. A supported large-file transfer route, resumability and representative machine/uploader testing are required before removing the cap. The storage allowance remains 4 decimal TB per practice; capacity and per-file transfer limits are different.
+The configured cap is now **50 GiB per file**, with 16 MiB multipart parts. Cloud uploads and downloads bypass Vercel file-body limits through narrowly scoped signed links. The storage allowance remains 4 decimal TB per practice. See [Large transfers](LARGE-TRANSFERS.md) for origin setup, security boundaries, uploader updates and live acceptance requirements.
 
 ## Supplier costs (verified November 19, 2026)
 
@@ -23,4 +23,4 @@ Backblaze lists storage starting at $6.95/TB/month. Four TB actually stored is a
 - [Backblaze pricing](https://www.backblaze.com/cloud-storage/pricing)
 - [Vercel function limits](https://vercel.com/docs/functions/limitations)
 
-Migration 002 is transactional and preserves existing workspace identities and file storage bindings. No new environment variables are required beyond the existing database, encryption and provisioning credentials. HIPAA readiness gates and outstanding BAA, restore, monitoring and transfer acceptance requirements continue to apply.
+Migrations 002 and 003 are transactional and preserves existing workspace identities and file storage bindings. No new environment variables are required beyond the existing database, encryption and provisioning credentials. HIPAA readiness gates and outstanding BAA, restore, monitoring and transfer acceptance requirements continue to apply.

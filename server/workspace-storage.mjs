@@ -155,6 +155,7 @@ export class BucketProvisioner {
         "b2_create_bucket",
         "b2_create_key",
         "b2_list_file_versions",
+        "b2_update_bucket",
       ].includes(operation)
         ? operation
         : "unknown";
@@ -314,6 +315,43 @@ export class BucketProvisioner {
       "Provisioning key needs unrestricted bucket creation and key creation permissions",
     );
     return auth;
+  }
+  async browserCors(bucket, env) {
+    const origin = new URL(env.APP_ORIGIN).origin;
+    requireValue(
+      origin.startsWith("https://"),
+      400,
+      "Browser transfers require the production HTTPS origin",
+    );
+    const auth = await this.checkProvisioning(env),
+      b = await this.verify(auth, bucket);
+    const name = "streamlined-vault-browser";
+    const rule = {
+      corsRuleName: name,
+      allowedOrigins: [origin],
+      allowedOperations: ["s3_put", "s3_get", "s3_head"],
+      allowedHeaders: ["content-type", "content-md5", "range"],
+      exposeHeaders: ["ETag", "Content-Length", "Content-Range"],
+      maxAgeSeconds: 300,
+    };
+    const rules = (b.corsRules || []).filter((r) => r.corsRuleName !== name);
+    requireValue(
+      rules.length < 100,
+      409,
+      "Bucket has no room for the browser transfer rule",
+    );
+    if (
+      JSON.stringify(
+        (b.corsRules || []).find((r) => r.corsRuleName === name),
+      ) === JSON.stringify(rule)
+    )
+      return;
+    await this.call(auth, "b2_update_bucket", {
+      bucketId: b.bucketId,
+      ...(b.revision ? { ifRevisionIs: b.revision } : {}),
+      bucketType: "allPrivate",
+      corsRules: [...rules, rule],
+    });
   }
   async create(tenant, env, onBucket) {
     const auth = await this.checkProvisioning(env);
@@ -656,5 +694,23 @@ export async function createWorkspaceStorage({
     }
     return clients.get(s.tenant);
   }
-  return { capabilities, input, view, provision, location, forFile };
+  async function prepareBrowser(tenant) {
+    if (demo) return;
+    const s = await get(tenant);
+    requireValue(
+      !s || s.status === "ready",
+      409,
+      "Complete storage setup first",
+    );
+    await provisioner.browserCors(s ? s.bucket : env.STORAGE_BUCKET, env);
+  }
+  return {
+    capabilities,
+    input,
+    view,
+    provision,
+    location,
+    forFile,
+    prepareBrowser,
+  };
 }
