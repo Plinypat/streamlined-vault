@@ -154,6 +154,7 @@ export class BucketProvisioner {
         "b2_list_buckets",
         "b2_create_bucket",
         "b2_create_key",
+        "b2_list_file_versions",
       ].includes(operation)
         ? operation
         : "unknown";

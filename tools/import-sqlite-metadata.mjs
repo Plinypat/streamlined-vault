@@ -30,6 +30,10 @@ const order = [
   "audit",
   "automations",
   "notices",
+  "service_settings",
+  "workspace_plans",
+  "transfer_events",
+  "provider_inventory",
 ];
 let source, db;
 try {

@@ -1,12 +1,12 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import pg from "pg";
-import { postgresDatabase } from "../server/database.mjs";
+import { postgresDatabase, migratePostgres } from "../server/database.mjs";
 import { createWorkspaceStorage } from "../server/workspace-storage.mjs";
 
 const testPostgres = process.env.TEST_POSTGRES_URL;
@@ -102,6 +102,42 @@ before(async () => {
     const reset = new pg.Pool({ connectionString: testPostgres, ssl: false });
     try {
       await reset.query("DROP SCHEMA IF EXISTS streamlined_vault CASCADE");
+      // Simulate an existing v1 deployment before exercising normal startup.
+      const upgrade = postgresDatabase(reset);
+      await upgrade.exec("CREATE SCHEMA streamlined_vault");
+      await upgrade.exec(
+        "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied TEXT NOT NULL)",
+      );
+      await upgrade.exec(
+        readFileSync(
+          new URL("../server/migrations/001-metadata.sql", import.meta.url),
+          "utf8",
+        ),
+      );
+      await upgrade.run(
+        "INSERT INTO schema_migrations VALUES(1,?)",
+        new Date().toISOString(),
+      );
+      await upgrade.run(
+        "INSERT INTO tenants(id,name,quota,status) VALUES('upgrade-fixture','Preserved workspace',4000000000000,'active')",
+      );
+      await migratePostgres(upgrade);
+      const preserved = await upgrade.one(
+        "SELECT * FROM tenants WHERE id='upgrade-fixture'",
+      );
+      assert.equal(preserved.name, "Preserved workspace");
+      assert.equal(preserved.kind, "client");
+      assert.equal(preserved.owner_email, null);
+      assert.equal(
+        (
+          await upgrade.one(
+            "SELECT MAX(version) AS version FROM schema_migrations",
+          )
+        ).version,
+        2,
+      );
+      await migratePostgres(upgrade); // Repeat cold starts must leave data intact.
+      await upgrade.run("DELETE FROM tenants WHERE id='upgrade-fixture'");
     } finally {
       await reset.end();
     }
@@ -948,7 +984,7 @@ test(
         const db = postgresDatabase(pool),
           newTenant = "storage-lease-test";
         await db.run(
-          "INSERT INTO tenants VALUES(?,?,?,?)",
+          "INSERT INTO tenants(id,name,quota,status) VALUES(?,?,?,?)",
           newTenant,
           "Encrypted synthetic storage",
           4_000_000_000_000,
@@ -1036,7 +1072,7 @@ test(
         await assert.rejects(
           db.transaction(async () => {
             await db.run(
-              "INSERT INTO tenants VALUES(?,?,?,?)",
+              "INSERT INTO tenants(id,name,quota,status) VALUES(?,?,?,?)",
               "rollback-synthetic",
               "Rollback",
               1,
@@ -1084,3 +1120,169 @@ test(
     }
   },
 );
+
+test("MSP settings, private workspaces, aggregate usage and plan controls are protected", async () => {
+  assert.equal(
+    (await request("/api/msp/settings", "GET", undefined, client)).status,
+    403,
+  );
+  assert.equal(
+    (await request("/api/msp/overview", "GET", undefined, client)).status,
+    403,
+  );
+  assert.equal(
+    (await request("/api/msp/inventory", "POST", {}, client)).status,
+    403,
+  );
+  const own = await request(
+    "/api/tenants",
+    "POST",
+    {
+      name: "Private MSP synthetic",
+      kind: "internal",
+      storage: { mode: "create" },
+    },
+    admin,
+  );
+  assert.equal(own.status, 201);
+  const again = await request(
+    "/api/tenants",
+    "POST",
+    {
+      name: "Duplicate private attempt",
+      kind: "internal",
+      storage: { mode: "create" },
+    },
+    admin,
+  );
+  assert.equal(again.value.id, own.value.id);
+  const privateBase = `/api/tenants/${own.value.id}`;
+  assert.equal(
+    (await request(privateBase + "/files", "GET", undefined, client)).status,
+    403,
+  );
+  assert.equal(
+    (
+      await request(
+        privateBase + "/members",
+        "POST",
+        { email: "client@example.test", role: "admin" },
+        admin,
+      )
+    ).status,
+    403,
+  );
+  const settings = await request("/api/msp/settings", "GET", undefined, admin);
+  assert.equal(settings.value.internalWorkspace.id, own.value.id);
+  const overview = await request("/api/msp/overview", "GET", undefined, admin);
+  assert.ok(overview.value.internal.some((t) => t.id === own.value.id));
+  assert.ok(!overview.value.clients.some((t) => t.id === own.value.id));
+  const clientView = await request("/api/me", "GET", undefined, client);
+  assert.ok(!clientView.value.tenants.some((t) => t.id === own.value.id));
+  const policy = {
+    published: false,
+    downloadLimitBytes: 1000,
+    downloadMode: "block",
+    downloadOverageCentsPerGB: 2,
+    storageUpgradeCentsPerTB: 1500,
+    additionalServices: "Synthetic draft terms",
+  };
+  assert.equal(
+    (await request("/api/msp/plan", "PATCH", policy, admin)).status,
+    200,
+  );
+  let plan = await request(
+    "/api/tenants/northside/plan",
+    "GET",
+    undefined,
+    client,
+  );
+  assert.deepEqual(plan.value.policy, { published: false });
+  assert.ok(!plan.value.draft);
+  assert.equal(
+    (
+      await request(
+        "/api/tenants/northside/plan",
+        "PATCH",
+        { ...policy, published: true },
+        client,
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await request(
+        "/api/msp/plan",
+        "PATCH",
+        { ...policy, published: true },
+        admin,
+      )
+    ).status,
+    200,
+  );
+  plan = await request("/api/tenants/northside/plan", "GET", undefined, client);
+  assert.equal(plan.value.policy.downloadLimitBytes, 1000);
+  assert.equal(plan.value.billingAutomatic, false);
+  const internalPlan = await request(
+    privateBase + "/plan",
+    "GET",
+    undefined,
+    admin,
+  );
+  assert.equal(internalPlan.value.policy.published, false);
+  const inventory = await request("/api/msp/inventory", "POST", {}, admin);
+  assert.equal(inventory.value.status, "complete");
+  assert.equal(inventory.value.snapshot.synthetic, true);
+});
+
+test("published hard download limits reserve concurrent traffic; drafts do not invent charges", async () => {
+  const created = await request(
+      "/api/tenants",
+      "POST",
+      { name: "Metered synthetic practice", storage: { mode: "create" } },
+      admin,
+    ),
+    base = `/api/tenants/${created.value.id}`;
+  const content = Buffer.from("1234567890"),
+    start = await request(
+      base + "/uploads",
+      "POST",
+      { name: "meter.txt", folder: "Test", size: content.length },
+      admin,
+    ),
+    fid = start.value.id;
+  await request(`${base}/uploads/${fid}/parts/1`, "PUT", content, admin, {
+    "X-Content-SHA256": createHash("sha256").update(content).digest("hex"),
+  });
+  await request(`${base}/uploads/${fid}/complete`, "POST", {}, admin);
+  await request(
+    base + "/plan",
+    "PATCH",
+    {
+      published: true,
+      downloadLimitBytes: 10,
+      downloadMode: "block",
+      downloadOverageCentsPerGB: null,
+      storageUpgradeCentsPerTB: null,
+      additionalServices: "By agreement",
+    },
+    admin,
+  );
+  const results = await Promise.all([
+    request(`${base}/files/${fid}/download`, "GET", undefined, admin),
+    request(`${base}/files/${fid}/download`, "GET", undefined, admin),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
+  const usage = await request(base + "/plan", "GET", undefined, admin);
+  assert.equal(usage.value.meter.uploadedBytes, 10);
+  assert.equal(
+    usage.value.meter.downloadedBytes + usage.value.meter.reservedDownloadBytes,
+    10,
+  );
+  const stats = await request("/api/msp/overview", "GET", undefined, admin);
+  assert.ok(
+    stats.value.clients.find((t) => t.id === created.value.id).meter
+      .downloadedBytes <= 10,
+  );
+});

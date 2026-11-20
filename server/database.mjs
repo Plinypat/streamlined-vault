@@ -21,6 +21,10 @@ const tables = [
   "workspace_storage",
   "storage_requests",
   "schema_migrations",
+  "service_settings",
+  "workspace_plans",
+  "transfer_events",
+  "provider_inventory",
 ];
 export function postgresSql(sql) {
   let n = 0;
@@ -163,14 +167,19 @@ CREATE TABLE IF NOT EXISTS automations(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS tokens(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,label TEXT NOT NULL,hash TEXT NOT NULL,scope TEXT NOT NULL,expires INTEGER NOT NULL,revoked INTEGER NOT NULL DEFAULT 0,last TEXT);
 CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,title TEXT NOT NULL,created TEXT NOT NULL);`;
 
+const migrations = [
+  { version: 1, file: "001-metadata.sql" },
+  { version: 2, file: "002-msp-console.sql" },
+];
 export async function migratePostgres(db) {
   try {
     if (
-      await db.one("SELECT version FROM schema_migrations WHERE version=?", 1)
+      (await db.one("SELECT MAX(version) AS version FROM schema_migrations"))
+        ?.version >= migrations.at(-1).version
     )
       return;
   } catch (e) {
-    if (e.code !== "42P01" && e.code !== "3F000") throw e;
+    if (!["42P01", "3F000"].includes(e.code)) throw e;
   }
   await db.transaction(async () => {
     await db.lock("streamlined-vault:schema");
@@ -178,23 +187,25 @@ export async function migratePostgres(db) {
     await db.exec(
       "CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied TEXT NOT NULL)",
     );
-    const version = await db.one(
-      "SELECT version FROM schema_migrations WHERE version=?",
-      1,
-    );
-    if (!version) {
-      await db.exec(
-        readFileSync(
-          new URL("./migrations/001-metadata.sql", import.meta.url),
-          "utf8",
-        ),
-      );
-      await db.run(
-        "INSERT INTO schema_migrations VALUES(?,?)",
-        1,
-        new Date().toISOString(),
-      );
-    }
+    for (const migration of migrations)
+      if (
+        !(await db.one(
+          "SELECT version FROM schema_migrations WHERE version=?",
+          migration.version,
+        ))
+      ) {
+        await db.exec(
+          readFileSync(
+            new URL("./migrations/" + migration.file, import.meta.url),
+            "utf8",
+          ),
+        );
+        await db.run(
+          "INSERT INTO schema_migrations VALUES(?,?)",
+          migration.version,
+          new Date().toISOString(),
+        );
+      }
   });
 }
 export async function openDatabase({ env, demo, data }) {
@@ -219,6 +230,19 @@ export async function openDatabase({ env, demo, data }) {
     await db.exec(
       "CREATE UNIQUE INDEX IF NOT EXISTS upload_request_id ON files(tenant,requestid)",
     );
+    if (!(await db.hasColumn("tenants", "kind")))
+      await db.exec(
+        "ALTER TABLE tenants ADD COLUMN kind TEXT NOT NULL DEFAULT 'client'",
+      );
+    if (!(await db.hasColumn("tenants", "owner_email")))
+      await db.exec("ALTER TABLE tenants ADD COLUMN owner_email TEXT");
+    const consoleSchema = readFileSync(
+      new URL("./migrations/002-msp-console.sql", import.meta.url),
+      "utf8",
+    )
+      .replace(/^ALTER TABLE[^;]+;\s*/gm, "")
+      .replaceAll("streamlined_vault.", "");
+    await db.exec(consoleSchema);
   }
   return db;
 }

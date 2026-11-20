@@ -8,7 +8,8 @@ import {
 } from "node:crypto";
 import { mkdirSync, readFileSync, existsSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
-import { Readable } from "node:stream";
+import { Transform } from "node:stream";
+import { createMspConsole } from "./msp-console.mjs";
 import { pipeline } from "node:stream/promises";
 import {
   createWorkspaceStorage,
@@ -95,8 +96,10 @@ const ready =
     env.HOSTING_APPROVED_FOR_PHI === "true" &&
     env.CLERK_BAA_CONFIRMED === "true" &&
     env.NEON_BAA_CONFIRMED === "true");
+const pilotTransfer =
+  env.NODE_ENV !== "test" && (demo || !!(env.VERCEL || env.VERCEL_ENV));
 const PART = 16 * 1024 * 1024,
-  MAX = PART * 10000;
+  MAX = pilotTransfer ? 4 * 1024 * 1024 : PART * 10000;
 async function audit(tenant, actor, action, resource = "") {
   return db.transaction(async () => {
     await db.lock("audit:chain");
@@ -243,6 +246,13 @@ async function authenticate(req) {
 async function tenantAccess(user, tenant, write = false, admin = false) {
   const t = await one("SELECT * FROM tenants WHERE id=?", tenant);
   need(t, 404, "Workspace not found");
+  need(
+    t.kind !== "internal" ||
+      (user.msp && t.owner_email === user.email) ||
+      (user.agent && user.tenant === tenant),
+    403,
+    "This is a private MSP workspace",
+  );
   let role = user.agent
     ? user.tenant === tenant
       ? user.scope === "upload"
@@ -275,9 +285,12 @@ async function tenantAccess(user, tenant, write = false, admin = false) {
 }
 async function accessible(user) {
   return user.msp
-    ? await q("SELECT * FROM tenants")
+    ? await q(
+        "SELECT * FROM tenants WHERE kind='client' OR (kind='internal' AND owner_email=?)",
+        user.email,
+      )
     : await q(
-        "SELECT t.* FROM tenants t JOIN members m ON m.tenant=t.id WHERE m.email=?",
+        "SELECT t.* FROM tenants t JOIN members m ON m.tenant=t.id WHERE m.email=? AND t.kind='client'",
         user.email,
       );
 }
@@ -333,7 +346,7 @@ if (demo && !(await one("SELECT id FROM tenants LIMIT 1"))) {
     ["Lakeside Imaging", "lakeside"],
   ]) {
     await run(
-      "INSERT INTO tenants VALUES(?,?,?,?)",
+      "INSERT INTO tenants(id,name,quota,status) VALUES(?,?,?,?)",
       i,
       n,
       4_000_000_000_000,
@@ -361,6 +374,14 @@ const devices = await createDevices({
   now,
 });
 
+const mspConsole = await createMspConsole({
+  db,
+  env,
+  demo,
+  workspaceStorage,
+  maxFileBytes: MAX,
+  audit,
+});
 const limits = new Map();
 const server = http.createServer(async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
@@ -395,6 +416,7 @@ const server = http.createServer(async (req, res) => {
         ready,
         brand: "Streamlined Vault",
         partSize: PART,
+        transferLimits: { maxFileBytes: MAX, pilot: pilotTransfer },
         auth: demo ? "demo" : "clerk",
         ...(clerkAuth
           ? {
@@ -447,6 +469,7 @@ const server = http.createServer(async (req, res) => {
           (await accessible(user)).map(async (t) => ({
             ...t,
             storage: await workspaceStorage.view(t.id, user.msp),
+            plan: await mspConsole.plan(t.id),
             used: await usage(t.id),
             role: user.msp
               ? "admin"
@@ -476,6 +499,30 @@ const server = http.createServer(async (req, res) => {
         );
         return send(res, 200, { ok: true });
       }
+      if (path.startsWith("/api/msp/")) {
+        need(user.msp);
+        if (path === "/api/msp/overview" && method === "GET")
+          return send(res, 200, await mspConsole.overview(user));
+        if (path === "/api/msp/settings" && method === "GET")
+          return send(res, 200, {
+            email: user.email,
+            internalWorkspace: await one(
+              "SELECT id,name,status FROM tenants WHERE kind='internal' AND owner_email=?",
+              user.email,
+            ),
+            policy: await mspConsole.settings(),
+            storageCapabilities: workspaceStorage.capabilities(),
+          });
+        if (path === "/api/msp/plan" && method === "PATCH")
+          return send(
+            res,
+            200,
+            await mspConsole.savePlan(null, await body(req), user.email),
+          );
+        if (path === "/api/msp/inventory" && method === "POST")
+          return send(res, 200, await mspConsole.refreshInventory());
+        throw error(404, "Not found");
+      }
       if (path === "/api/tenants" && method === "POST") {
         need(user.msp);
         const b = await body(req);
@@ -491,7 +538,21 @@ const server = http.createServer(async (req, res) => {
           400,
           "Invalid setup request identifier",
         );
+        const kind = b.kind || "client";
+        need(
+          ["client", "internal"].includes(kind),
+          400,
+          "Invalid workspace type",
+        );
         const tenant = await db.transaction(async () => {
+          if (kind === "internal") {
+            await db.lock("internal-owner:" + user.email);
+            const own = await one(
+              "SELECT id FROM tenants WHERE kind='internal' AND owner_email=?",
+              user.email,
+            );
+            if (own) return own.id;
+          }
           if (b.requestId) await db.lock("setup:" + b.requestId);
           const prior = b.requestId
             ? await one(
@@ -504,15 +565,33 @@ const server = http.createServer(async (req, res) => {
             409,
             "Setup request is already assigned to a different practice",
           );
-          if (prior) return prior.tenant;
+          if (prior) {
+            const assigned = await one(
+              "SELECT kind,owner_email FROM tenants WHERE id=?",
+              prior.tenant,
+            );
+            need(
+              assigned.kind === kind &&
+                (kind !== "internal" || assigned.owner_email === user.email),
+              409,
+              "Setup request is assigned to another workspace type",
+            );
+            return prior.tenant;
+          }
           const tid = id();
           workspaceStorage.input(b.storage, tid);
           await run(
-            "INSERT INTO tenants VALUES(?,?,?,?)",
+            "INSERT INTO tenants(id,name,quota,status) VALUES(?,?,?,?)",
             tid,
             b.name.trim(),
             4_000_000_000_000,
             "storage_pending",
+          );
+          await run(
+            "UPDATE tenants SET kind=?,owner_email=? WHERE id=?",
+            kind,
+            kind === "internal" ? user.email : null,
+            tid,
           );
           if (b.requestId)
             await run(
@@ -560,6 +639,19 @@ const server = http.createServer(async (req, res) => {
       const tenant = route[1],
         tail = route[2];
       const t = await tenantAccess(user, tenant);
+      if (tail === "/plan" && method === "GET")
+        return send(res, 200, {
+          ...(await mspConsole.plan(tenant)),
+          ...(user.msp ? { draft: await mspConsole.policy(tenant) } : {}),
+        });
+      if (tail === "/plan" && method === "PATCH") {
+        need(user.msp);
+        return send(
+          res,
+          200,
+          await mspConsole.savePlan(tenant, await body(req), user.email),
+        );
+      }
       if (tail === "/devices" || tail.startsWith("/devices/"))
         return await devices.portal(req, res, user, tenant, tail);
       if (tail === "/storage" && method === "POST") {
@@ -611,6 +703,11 @@ const server = http.createServer(async (req, res) => {
         );
       }
       if (tail === "/members" && method === "POST") {
+        need(
+          t.kind !== "internal",
+          403,
+          "Private MSP workspaces cannot be shared with practice members",
+        );
         await tenantAccess(user, tenant, false, true);
         const b = await body(req);
         need(
@@ -757,7 +854,7 @@ const server = http.createServer(async (req, res) => {
         need(
           Number.isSafeInteger(b.size) && b.size > 0 && b.size <= MAX,
           400,
-          "File size must be between 1 byte and 160,000 MiB",
+          "File exceeds the current upload size limit shown in your plan",
         );
         need(
           !b.requestId || /^[a-f0-9-]{36}$/.test(b.requestId),
@@ -843,6 +940,7 @@ const server = http.createServer(async (req, res) => {
         need(ready, 503, "Storage not activated");
         const content =
           method === "PUT" && ur[2] ? await body(req, PART, true) : null;
+        if (content) await mspConsole.recordUpload(tenant, content.length);
         if (content) {
           const checksum = req.headers["x-content-sha256"];
           need(
@@ -983,18 +1081,47 @@ const server = http.createServer(async (req, res) => {
             416,
             "Unsupported range",
           );
-          const result = await (
-            await workspaceStorage.forFile(f)
-          ).get(f.key, f.version, range);
-          await audit(tenant, user.email, "Download authorized", f.id);
-          res.writeHead(range ? 206 : 200, {
-            "Content-Type": "application/octet-stream",
-            "Content-Disposition": `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(f.name).replace(/'/g, "%27")}`,
-            "Content-Length": result.length,
-            "Accept-Ranges": "bytes",
-            ...(result.range ? { "Content-Range": result.range } : {}),
-          });
-          await pipeline(result.body, res);
+          const match = range ? /^bytes=(\d+)-(\d*)$/.exec(range) : null,
+            start = match ? Number(match[1]) : 0,
+            end =
+              match && match[2]
+                ? Math.min(Number(match[2]), f.size - 1)
+                : f.size - 1;
+          need(
+            start >= 0 && start < f.size && end >= start,
+            416,
+            "Unsupported range",
+          );
+          const transfer = await mspConsole.reserveDownload(
+            tenant,
+            end - start + 1,
+          );
+          let streamed = 0,
+            success = false;
+          try {
+            const result = await (
+              await workspaceStorage.forFile(f)
+            ).get(f.key, f.version, range);
+            await audit(tenant, user.email, "Download authorized", f.id);
+            res.writeHead(range ? 206 : 200, {
+              "Content-Type": "application/octet-stream",
+              "Content-Disposition": `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(f.name).replace(/'/g, "%27")}`,
+              "Content-Length": result.length,
+              "Accept-Ranges": "bytes",
+              ...(result.range ? { "Content-Range": result.range } : {}),
+            });
+            const meter = new Transform({
+              transform(chunk, encoding, done) {
+                streamed += chunk.length;
+                done(null, chunk);
+              },
+            });
+            await pipeline(result.body, meter, res);
+            success = true;
+          } finally {
+            await mspConsole.finishDownload(transfer, streamed, success);
+          }
+
           return;
         }
         if (method === "PATCH") {
