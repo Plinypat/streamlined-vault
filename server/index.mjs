@@ -494,7 +494,22 @@ const server = http.createServer((req, res) =>
             405,
             "Maintenance method not allowed",
           );
-          return send(res, 200, await security.maintenance());
+          const scheduled =
+            req.headers["x-vercel-cron-schedule"] === "*/15 * * * *" &&
+            String(req.headers["user-agent"] || "").startsWith("vercel-cron/");
+          const result = await security.maintenance(
+            scheduled ? "security-maintenance" : "security-endpoint-check",
+          );
+          console.info(
+            JSON.stringify({
+              event: "security_maintenance_completed",
+              scheduled,
+              archivedBatches: result.archivedBatches || 0,
+              requestId: context.requestId,
+              at: now(),
+            }),
+          );
+          return send(res, 200, result);
         }
         if (path === "/api/config")
           return send(res, 200, {

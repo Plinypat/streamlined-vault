@@ -315,6 +315,7 @@ export function createSecurityConsole({
       if (actor === "security-maintenance")
         await archive.save("maintenance_last_scheduled_success", {
           at: new Date().toISOString(),
+          trigger: "vercel_cron",
         });
       await archive.save("maintenance_last_failure", null);
       await check(
@@ -361,9 +362,11 @@ export function createSecurityConsole({
       "SELECT * FROM security_alerts ORDER BY CASE WHEN status='open' THEN 0 ELSE 1 END,last_seen DESC LIMIT 100",
     );
     const last = await archive.setting("maintenance_last_success");
-    const scheduled = await archive.setting(
+    const scheduledRecord = await archive.setting(
       "maintenance_last_scheduled_success",
     );
+    const scheduled =
+      scheduledRecord?.trigger === "vercel_cron" ? scheduledRecord : null;
     return {
       technicalApproval: false,
       synthetic: demo,

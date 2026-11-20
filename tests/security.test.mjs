@@ -60,6 +60,7 @@ async function startServer(listenPort = port) {
       ...process.env,
       DEMO_MODE: "true",
       NODE_ENV: "test",
+      CRON_SECRET: "synthetic-local-maintenance-key-32chars-only",
       PORT: String(listenPort),
       APP_ORIGIN: `http://127.0.0.1:${listenPort}`,
       DATA_DIRECTORY: dir,
@@ -1371,6 +1372,35 @@ test("MSP security operations are isolated, denial logs are durable and maintena
   assert.equal(canary.status, 200);
   assert.equal(canary.value.result.checksumVerified, true);
   assert.equal(canary.value.result.synthetic, true);
+  const endpoint = await request(
+    "/internal/security-maintenance",
+    "GET",
+    undefined,
+    undefined,
+    { Authorization: "Bearer synthetic-local-maintenance-key-32chars-only" },
+  );
+  assert.equal(endpoint.status, 200);
+  assert.equal(
+    (await request("/api/msp/security", "GET", undefined, admin)).value
+      .maintenance.lastScheduledSuccess,
+    null,
+  );
+  const scheduled = await request(
+    "/internal/security-maintenance",
+    "GET",
+    undefined,
+    undefined,
+    {
+      Authorization: "Bearer synthetic-local-maintenance-key-32chars-only",
+      "User-Agent": "vercel-cron/1.0",
+      "x-vercel-cron-schedule": "*/15 * * * *",
+    },
+  );
+  assert.equal(scheduled.status, 200);
+  assert.ok(
+    (await request("/api/msp/security", "GET", undefined, admin)).value
+      .maintenance.lastScheduledSuccess,
+  );
   if (testPostgres) {
     const pool = new pg.Pool({ connectionString: testPostgres, ssl: false });
     try {
