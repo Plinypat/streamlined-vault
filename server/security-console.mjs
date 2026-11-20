@@ -160,9 +160,12 @@ export function createSecurityConsole({
     const row = await db.one(
       "SELECT s.ssl,s.version,r.rolsuper,EXISTS(SELECT 1 FROM pg_namespace n WHERE n.nspname='streamlined_vault' AND n.nspowner=r.oid) AS schema_owner,EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='streamlined_vault' AND c.relowner=r.oid) AS table_owner FROM pg_roles r LEFT JOIN pg_stat_ssl s ON s.pid=pg_backend_pid() WHERE r.rolname=current_user",
     );
+    const transport = await db.transportEvidence();
     const result = {
-      encryptedTransport: !!row.ssl,
-      tlsVersion: row.version || null,
+      encryptedTransport: transport.encrypted && transport.certificateVerified,
+      certificateVerified: transport.certificateVerified,
+      tlsVersion: transport.tlsVersion,
+      tlsEvidence: "Application connection to database endpoint",
       restrictedRole: !row.rolsuper && !row.schema_owner && !row.table_owner,
     };
     if (!result.encryptedTransport || !result.restrictedRole)

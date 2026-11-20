@@ -115,6 +115,19 @@ export function postgresDatabase(pool) {
   const db = {
     kind: "postgres",
     pool,
+    transportEvidence: async () => {
+      const client = await pool.connect();
+      try {
+        const stream = client.connection.stream;
+        return {
+          encrypted: stream.encrypted === true,
+          certificateVerified: stream.authorized === true,
+          tlsVersion: stream.getProtocol?.() || null,
+        };
+      } finally {
+        client.release();
+      }
+    },
     q: async (sql, ...args) => (await query(sql, args)).rows,
     one: async (sql, ...args) => (await query(sql, args)).rows[0],
     run: async (sql, ...args) => ({
