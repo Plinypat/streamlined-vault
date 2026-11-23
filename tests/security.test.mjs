@@ -497,6 +497,35 @@ test("viewer membership permits listing but denies upload and membership changes
     403,
   );
 });
+test("all practice roles enforce file and administration boundaries and membership removal", async () => {
+  const workspace = await request("/api/tenants", "POST", { name: "Role acceptance" }, admin);
+  const foreign = await request("/api/tenants", "POST", { name: "Foreign acceptance" }, admin);
+  const base = `/api/tenants/${workspace.value.id}`;
+  const other = `/api/tenants/${foreign.value.id}`;
+  const bytes = Buffer.from("Synthetic role acceptance file");
+  const upload = await request(base + "/uploads", "POST", { name: "role.txt", folder: "Test", size: bytes.length }, admin);
+  assert.equal(upload.status, 201);
+  const id = upload.value.id;
+  assert.equal((await request(`${base}/uploads/${id}/parts/1`, "PUT", bytes, admin, { "X-Content-SHA256": createHash("sha256").update(bytes).digest("hex") })).status, 200);
+  assert.equal((await request(`${base}/uploads/${id}/complete`, "POST", {}, admin)).status, 200);
+  for (const role of ["viewer", "uploader", "editor", "admin"]) {
+    assert.equal((await request(base + "/members", "POST", { email: "client@example.test", role }, admin)).status, 200);
+    assert.equal((await request(base + "/files", "GET", undefined, client)).status, role === "uploader" ? 403 : 200);
+    assert.equal((await request(`${base}/files/${id}/download`, "GET", undefined, client)).status, role === "uploader" ? 403 : 200);
+    assert.equal((await request(`${base}/files/${id}`, "PATCH", { name: "reviewed.txt" }, client)).status, ["editor", "admin"].includes(role) ? 200 : 403);
+    assert.equal((await request(base + "/members", "GET", undefined, client)).status, role === "admin" ? 200 : 403);
+    const pending = await request(base + "/uploads", "POST", { name: "pending.txt", folder: "Test", size: 1 }, client);
+    assert.equal(pending.status, role === "viewer" ? 403 : 201);
+    if (pending.status === 201) assert.equal((await request(`${base}/uploads/${pending.value.id}`, "DELETE", {}, client)).status, 200);
+    for (const [path, method, body] of [["/files", "GET"], [`/files/${id}/download`, "GET"], ["/uploads", "POST", {name:"denied.txt",folder:"Test",size:1}], ["/members", "POST", {email:"client@example.test",role:"admin"}]]) {
+      assert.equal((await request(other + path, method, body, client)).status, 403);
+    }
+  }
+  assert.equal((await request(base + "/members", "DELETE", { email: "client@example.test" }, admin)).status, 200);
+  assert.equal((await request(base + "/files", "GET", undefined, client)).status, 403);
+  assert.equal((await request(`${base}/files/${id}/download`, "GET", undefined, client)).status, 403);
+});
+
 test("device enrollment is one-time, policy-bound, scoped and immediately revocable", async () => {
   const base = "/api/tenants/northside";
   const enrollment = await request(

@@ -1,4 +1,4 @@
-import { productionApprovals, productionAuthorized } from "./activation.mjs";
+import { productionApprovals, productionAuthorized, readinessScopes } from "./activation.mjs";
 import { createMetadataBackups } from "./metadata-backups.mjs";
 import { createNotifications, heartbeat } from "./notifications.mjs";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
@@ -496,13 +496,15 @@ export function createSecurityConsole({
       storage: "Private storage and browser transfers",
       criticalAlerts: "Open critical alerts",
     };
-    const technicalReady = !demo && Object.values(gates).every(Boolean);
+    const scopes = readinessScopes(gates);
+    const technicalReady = !demo && scopes.portalReady;
     return {
       technicalApproval: technicalReady && current("activation_review"),
       activation: {
         productionAuthorized: !demo && productionAuthorized(env),
         providerApprovals: productionApprovals(env),
         technicalReady,
+        practiceOnboarding: scopes.practiceOnboarding,
         technicalApproval: technicalReady && current("activation_review"),
         launchComplete:
           !demo &&
@@ -511,6 +513,7 @@ export function createSecurityConsole({
           current("activation_review"),
       },
       technicalReady,
+      practiceOnboarding: scopes.practiceOnboarding,
       gates,
       evidence,
       backups: backupState,
@@ -531,7 +534,7 @@ export function createSecurityConsole({
         "SELECT id,created,event,severity,status,tenant,resource,request_id,route,method FROM security_events ORDER BY rowid DESC LIMIT 100",
       ),
       accessReview: await archive.setting("access_review"),
-      remaining: Object.entries(gates)
+      remaining: Object.entries(scopes.portalGates)
         .filter(([, passed]) => !passed)
         .map(([name]) => labels[name] + " verification pending"),
     };

@@ -14,3 +14,19 @@ export function productionApprovals(env) {
 export function productionAuthorized(env) {
   return productionApprovals(env).every((item) => item.confirmed);
 }
+
+// Practice endpoint onboarding is reviewed separately from the cloud portal.
+export function readinessScopes(gates) {
+  const onboardingKeys = new Set(["pilot", "endpoint"]);
+  const portalGates = Object.fromEntries(
+    Object.entries(gates).filter(([key]) => !onboardingKeys.has(key)),
+  );
+  return {
+    portalReady: Object.values(portalGates).every(Boolean),
+    portalGates,
+    practiceOnboarding: {
+      ready: gates.pilot === true && gates.endpoint === true,
+      gates: { pilot: gates.pilot === true, endpoint: gates.endpoint === true },
+    },
+  };
+}

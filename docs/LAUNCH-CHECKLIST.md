@@ -14,10 +14,19 @@ Remaining operator/practice evidence:
 - Confirm the practice computer's encryption, updates, local time and approved export source. Run the installer on Sorski's computer, then validate two actual nightly runs at 21:00 local time plus restore/restart/resume tests.
 - Review the user-reported completed provider agreements/account approvals against their actual documents or dashboards. Record each confirmed flag only after that review. Source locations have not yet been supplied.
 - Credential review passed: the previously shared database-owner password was rotated and the new owner connection verified. Workspace storage is private, encrypted and restricted to its bucket. Audit and recovery writers cannot delete files, administer keys or bypass retention. Required server secrets are protected Production variables. A scan of 79 tracked files found none of the checked current credentials. This is a scoped review, not proof that every historical third-party secret was scanned.
-- Record final activation only after current technical checks, provider approvals and the actual practice pilot pass. Review evidence expires after 30 days.
+- Record portal activation only after cloud technical checks and provider approvals pass. Practice endpoint review and the actual pilot are separate onboarding evidence and do not block portal approval. Review evidence expires after 30 days.
 
 See SORSKI-PILOT.md for the on-site workflow. Record real results, not intended results. A completed package build is not a live practice pilot.
 
 The GitHub Actions monitor secret is now working, verified by a successful rerun. Connected Drive searches located client agreement drafts but no matching completed storage/hosting/identity/database provider approval records; those activation flags remain unchanged pending evidence.
 
 After deploying the inventory fix, the inventory fault and historical database-hardening/maintenance alerts were resolved with fix/test references and fresh live restricted-role, certificate-verified transport, scheduled-maintenance and protected-archive evidence. No unresolved high-severity alerts remained at that verification.
+
+
+## Portal and practice onboarding separation
+
+At the operator's request, practice endpoint review and the two-night Sorski pilot are tracked separately from cloud-portal technical readiness. Their evidence is still pending; no pilot success is implied. Cloud MFA recovery, independent monitoring, provider approvals and an explicit portal review remain required for portal approval. Existing backend provider guards on production file transfers are unchanged.
+
+The persistent yellow activation banner has been replaced with a compact header status. Security & logs retains provider approval details, cloud readiness and the independent practice-onboarding status. Removing a banner does not approve PHI processing.
+
+November 23 verification: 57 application tests passed (one PostgreSQL-only case skipped in that run), then all 18 PostgreSQL integration tests passed. The role matrix exercised viewer, uploader, editor and practice-administrator behavior, cross-practice list/download/upload/administration denial, and immediate denial after membership removal. Clerk tests cover invalid signatures/origins, pending sessions, absent/stale second factors, revoked sessions, unverified/banned users and application-owned membership. These automated tests supplement the operator-confirmed live sign-in and access assignment; live recovery-code and session-revocation acceptance remain unverified.
