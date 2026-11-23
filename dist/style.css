@@ -1245,3 +1245,18 @@ dialog:has(.storage-options) {
 .sidebarbottom {
   flex-shrink: 0;
 }
+
+.navgroup + .navgroup { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 10px; }
+.navgroup .navlabel { padding: 12px 10px 8px; overflow-wrap: anywhere; }
+.sidebar nav button { min-height: 42px; width: 100%; text-align: left; }
+@media (max-width: 800px) {
+ .sidebar { position: relative; width: 100%; height: auto; padding: 16px; }
+ .sidebar .brand strong, .sidebar .brand small, .sidebar .workspace, .sidebar .navlabel, .sidebar .navtext { display: block; }
+ .sidebar .brand { justify-content: flex-start; }
+ .sidebar .workspace { margin: 16px 0 8px; }
+ .sidebar nav { margin-top: 0; overflow: visible; }
+ .navgroup { display: flex; flex-wrap: wrap; gap: 4px; }
+ .navgroup .navlabel { flex-basis: 100%; }
+ .sidebar nav button { width: auto; padding: 9px 12px; justify-content: flex-start; }
+ .main { margin-left: 0; }
+}
