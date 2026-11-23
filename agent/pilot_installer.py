@@ -28,11 +28,11 @@ def install(source,code,bundle):
     if sys.platform!='win32' or os.environ.get('PROCESSOR_ARCHITECTURE','').upper()=='ARM64':raise ValueError('This package supports Windows x64 only.')
     if not ctypes.windll.shell32.IsUserAnAdmin():raise ValueError('Run this installer with administrator approval.')
     root=Path(os.environ['ProgramFiles'])/'Streamlined Vault Uploader';state=Path(os.environ['ProgramData'])/'StreamlinedVault'
-    if (state/'config.json').exists() or (root/'python').exists():raise ValueError('A previous installation exists. Review it before re-enrollment.')
+    if any(p.exists() or p.is_symlink() or (hasattr(p,'is_junction') and p.is_junction()) for p in [root,state]):raise ValueError('An installation folder already exists. Review it before installation or re-enrollment.')
     query=subprocess.run(['schtasks.exe','/Query','/TN',TASK],stdout=subprocess.PIPE,stderr=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW)
     if query.returncode==0:raise ValueError('An uploader task already exists. Review it before installing again.')
     runtime=Path(bundle)/'python-runtime.zip';verify_runtime(runtime)
-    for p in [root,state]:p.mkdir(parents=True,exist_ok=True);protect(p)
+    for p in [root,state]:p.mkdir(parents=False,exist_ok=False);protect(p)
     for name in ['vault_agent.py','schedule.py','vault_transfer.py']:shutil.copyfile(Path(bundle)/name,root/name)
     runtime_root=root/'python';runtime_root.mkdir()
     with zipfile.ZipFile(runtime) as archive:
