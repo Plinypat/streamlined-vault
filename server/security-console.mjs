@@ -578,7 +578,10 @@ export function createSecurityConsole({
       "Use a short evidence reference, without secrets or patient details",
     );
     if (input.kind === "activation_review")
-      need((await status()).technicalReady, "Complete technical checks first");
+      need(
+        (await status()).technicalReady && !demo && productionAuthorized(env),
+        "Complete technical checks and provider approvals first",
+      );
     const at = new Date().toISOString(),
       expires = new Date(Date.now() + 30 * 86400000).toISOString();
     await db.run(
