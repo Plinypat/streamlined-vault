@@ -110,3 +110,32 @@ test("account inventory includes retained versions and resumes from an encrypted
   assert.equal(refreshed.snapshot.bytes, 24);
   assert.ok(calls.every((method) => method.startsWith("b2_list_")));
 });
+
+test("native file-version requests omit accountId while account bucket requests retain it", async () => {
+  const { BucketProvisioner } = await import("../server/workspace-storage.mjs");
+  const calls = [];
+  const provider = new BucketProvisioner({
+    fetchImpl: async (url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      if (url.endsWith("b2_list_file_versions"))
+        assert.equal(Object.hasOwn(body, "accountId"), false);
+      return { ok: true, json: async () => ({ files: [], buckets: [] }) };
+    },
+  });
+  const auth = {
+    apiUrl: "https://api.example.test",
+    accountId: "synthetic-account",
+    token: "synthetic-token",
+  };
+  await provider.call(auth, "b2_list_file_versions", {
+    bucketId: "synthetic-bucket",
+    maxFileCount: 1000,
+    startFileName: "cursor",
+    startFileId: "version",
+  });
+  assert.equal(calls[0].startFileName, "cursor");
+  assert.equal(calls[0].startFileId, "version");
+  await provider.call(auth, "b2_list_buckets", {});
+  assert.equal(calls[1].accountId, "synthetic-account");
+});

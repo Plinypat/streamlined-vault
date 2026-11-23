@@ -2,7 +2,7 @@
 # Requires elevation and a machine-accessible Python 3.10+ installation.
 # Does not purchase, download or silently install third-party software.
 #Requires -RunAsAdministrator
-#Requires -Version 7.0
+#Requires -Version 5.1
 param(
     [Parameter(Mandatory=$true)][string]$Portal,
     [Parameter(Mandatory=$true)][string[]]$Source,
@@ -33,20 +33,14 @@ $agentPath=Join-Path $installRoot 'vault_agent.py'
 $configPath=Join-Path $stateRoot 'config.json'
 $enrollment=Read-Host 'Paste the one-time Streamlined Vault enrollment credential' -AsSecureString
 # Credential travels through stdin, not shell interpolation or command-line arguments.
-$startInfo=[Diagnostics.ProcessStartInfo]::new()
-$startInfo.FileName=$PythonPath
-$startInfo.UseShellExecute=$false
-$startInfo.RedirectStandardInput=$true
-$startInfo.CreateNoWindow=$true
-foreach ($argument in @($agentPath,'enroll','--portal',$Portal,'--config',$configPath)) { $startInfo.ArgumentList.Add($argument) }
-foreach ($folder in $Source) { $startInfo.ArgumentList.Add('--source');$startInfo.ArgumentList.Add($folder) }
-$process=[Diagnostics.Process]::Start($startInfo)
-$plain=[Net.NetworkCredential]::new('',$enrollment).Password
-$process.StandardInput.WriteLine($plain)
-$process.StandardInput.Close()
-$plain=$null;$enrollment=$null
-$process.WaitForExit()
-if ($process.ExitCode -ne 0) { throw 'Enrollment failed; no scheduled task was installed.' }
+$enrollArgs=@($agentPath,'enroll','--portal',$Portal,'--config',$configPath)
+foreach($folder in $Source){$enrollArgs+=@('--source',$folder)}
+try {
+    $plain=[Net.NetworkCredential]::new('',$enrollment).Password
+    $plain | & $PythonPath @enrollArgs
+    $enrollExit=$LASTEXITCODE
+} finally { $plain=$null;$enrollment=$null }
+if ($enrollExit -ne 0) { throw 'Enrollment failed; no scheduled task was installed.' }
 $action=New-ScheduledTaskAction -Execute $PythonPath -Argument ('"{0}" run --config "{1}"' -f $agentPath,$configPath) -WorkingDirectory $installRoot
 $trigger=New-ScheduledTaskTrigger -AtStartup
 $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest

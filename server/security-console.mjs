@@ -1,3 +1,4 @@
+import { productionApprovals, productionAuthorized } from "./activation.mjs";
 import { createMetadataBackups } from "./metadata-backups.mjs";
 import { createNotifications, heartbeat } from "./notifications.mjs";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
@@ -469,9 +470,14 @@ export function createSecurityConsole({
           JSON.parse(c.result).browserOriginVerified &&
           Date.now() - Date.parse(c.created) < 7 * 86400000,
       );
-    gates.criticalAlerts = !alerts.some(
-      (a) => a.status === "open" && ["high", "critical"].includes(a.severity),
-    );
+    gates.criticalAlerts =
+      Number(
+        (
+          await db.one(
+            "SELECT COUNT(*) AS count FROM security_alerts WHERE status IN ('open','acknowledged') AND severity IN ('high','critical')",
+          )
+        ).count,
+      ) === 0;
     const labels = {
       database: "Database protection",
       logIntegrity: "Log integrity",
@@ -493,6 +499,17 @@ export function createSecurityConsole({
     const technicalReady = !demo && Object.values(gates).every(Boolean);
     return {
       technicalApproval: technicalReady && current("activation_review"),
+      activation: {
+        productionAuthorized: !demo && productionAuthorized(env),
+        providerApprovals: productionApprovals(env),
+        technicalReady,
+        technicalApproval: technicalReady && current("activation_review"),
+        launchComplete:
+          !demo &&
+          productionAuthorized(env) &&
+          technicalReady &&
+          current("activation_review"),
+      },
       technicalReady,
       gates,
       evidence,
@@ -532,6 +549,11 @@ export function createSecurityConsole({
     await archive.save("access_review", {
       at: new Date().toISOString(),
       reviewer: actor,
+    });
+    await recordEvidence(actor, {
+      kind: "access_review",
+      reference:
+        "console-access-review-" + new Date().toISOString().slice(0, 10),
     });
     await log.event("access_review", { actor });
     await audit("msp", actor, "Privileged access reviewed");
@@ -575,8 +597,50 @@ export function createSecurityConsole({
     );
     return { ok: true };
   }
+  async function resolveAlert(actor, input) {
+    need(
+      typeof input.id === "string" && input.id.length <= 100,
+      "Choose an alert",
+    );
+    need(
+      typeof input.reference === "string" &&
+        /^[A-Za-z0-9 ._:/-]{3,160}$/.test(input.reference),
+      "Provide a verified fix or test reference without patient information",
+    );
+    await db.transaction(async () => {
+      let item = await db.one(
+        "SELECT * FROM security_alerts WHERE id=?",
+        input.id,
+      );
+      need(item, "Alert not found");
+      await db.lock("security:alert:" + item.code);
+      item = await db.one("SELECT * FROM security_alerts WHERE id=?", input.id);
+      await archive.save("alert_resolution:" + input.id, {
+        at: new Date().toISOString(),
+        reviewer: actor,
+        reference: input.reference,
+        occurrences: item.occurrences,
+        lastSeen: item.last_seen,
+      });
+      await db.run(
+        "UPDATE security_alerts SET status='resolved' WHERE id=?",
+        input.id,
+      );
+      await audit(
+        "msp",
+        actor,
+        "Security alert resolved after verification",
+        input.reference,
+      );
+    });
+  }
+  async function activationStatus() {
+    return (await status()).activation;
+  }
   return {
     status,
+    activationStatus,
+    resolveAlert,
     browserStatus,
     recordBrowser,
     backups,

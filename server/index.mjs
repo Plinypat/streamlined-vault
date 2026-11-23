@@ -1,3 +1,4 @@
+import { productionAuthorized } from "./activation.mjs";
 import { createDirectTransfers } from "./direct-transfers.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createSecurityLog, routeClass } from "./security-log.mjs";
@@ -96,12 +97,7 @@ if (
     );
   }
 }
-const ready =
-  demo ||
-  (env.PROVIDER_BAA_CONFIRMED === "true" &&
-    env.HOSTING_APPROVED_FOR_PHI === "true" &&
-    env.CLERK_BAA_CONFIRMED === "true" &&
-    env.NEON_BAA_CONFIRMED === "true");
+const ready = demo || productionAuthorized(env);
 const PART = 16 * 1024 * 1024;
 const MAX = 50 * 1024 ** 3;
 const pilotTransfer = false;
@@ -473,6 +469,7 @@ const server = http.createServer((req, res) =>
               notifications: state.notifications,
               technicalApproval: state.technicalApproval,
               gates: state.gates,
+              activation: state.activation,
               archive: state.archive,
               maintenance: state.maintenance,
               checks: state.checks.slice(0, 12),
@@ -532,6 +529,7 @@ const server = http.createServer((req, res) =>
           return send(res, 200, {
             demo,
             ready,
+            activation: { productionAuthorized: !demo && ready },
             brand: "Streamlined Vault",
             partSize: PART,
             transferLimits: {
@@ -648,6 +646,14 @@ const server = http.createServer((req, res) =>
                   "SELECT tenant,email,role FROM members ORDER BY tenant,email",
                 ),
               });
+            if (
+              path === "/api/msp/security/resolve-alert" &&
+              method === "POST"
+            ) {
+              const b = await body(req);
+              await security.resolveAlert(user.email, b);
+              return send(res, 200, { ok: true });
+            }
             if (path === "/api/msp/security/acknowledge" && method === "POST") {
               const b = await body(req);
               need(typeof b.id === "string" && b.id.length <= 100, 400);
@@ -686,6 +692,9 @@ const server = http.createServer((req, res) =>
             );
             return send(res, 200, {
               ...user,
+              ...(user.msp
+                ? { activation: await security.activationStatus() }
+                : {}),
               ...(user.msp
                 ? { storageCapabilities: workspaceStorage.capabilities() }
                 : {}),

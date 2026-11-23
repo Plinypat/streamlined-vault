@@ -1457,7 +1457,12 @@ test("MSP security operations are isolated, denial logs are durable and maintena
 });
 
 test("recovery endpoints require MSP membership, CSRF and cron authorization; evidence cannot silently activate production", async () => {
-  for (const endpoint of ["backup", "evidence", "test-notification"]) {
+  for (const endpoint of [
+    "backup",
+    "evidence",
+    "test-notification",
+    "resolve-alert",
+  ]) {
     assert.equal(
       (await request("/api/msp/security/" + endpoint, "POST", {})).status,
       401,
@@ -1494,5 +1499,12 @@ test("recovery endpoints require MSP membership, CSRF and cron authorization; ev
   const status = await request("/api/msp/security", "GET", undefined, admin);
   assert.equal(status.value.technicalApproval, false);
   assert.equal(status.value.backups.configured, false);
+  assert.equal(status.value.activation.launchComplete, false);
+  assert.equal(status.value.activation.providerApprovals.length, 4);
+  const administrator = await request("/api/me", "GET", undefined, admin),
+    practice = await request("/api/me", "GET", undefined, client);
+  assert.ok(administrator.value.activation);
+  assert.equal(practice.value.activation, undefined);
+
   assert.ok(!JSON.stringify(status.value).includes("wrappedKey"));
 });

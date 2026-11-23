@@ -234,3 +234,44 @@ test("readiness is not granted by recording activation or a synthetic review", a
   assert.equal(state.gates.keyCustody, true);
   assert.equal(state.gates.mfa, false);
 });
+
+test("acknowledged high alerts still block readiness; resolving requires verification evidence and recurrence reopens", async (t) => {
+  const f = await fixture(t),
+    security = createSecurityConsole({
+      ...f,
+      demo: true,
+      workspaceStorage: {},
+      audit: async () => {},
+    });
+  const id = await f.log.alert("request_failed", "high");
+  await security.acknowledge(id, "operator");
+  assert.equal((await security.status()).gates.criticalAlerts, false);
+  await assert.rejects(
+    () => security.resolveAlert("operator", { id, reference: "" }),
+    /reference/,
+  );
+  await security.resolveAlert("operator", {
+    id,
+    reference: "verified-inventory-fix",
+  });
+  assert.equal((await security.status()).gates.criticalAlerts, true);
+  assert.ok(
+    await f.db.one(
+      "SELECT value FROM security_state WHERE id=?",
+      "alert_resolution:" + id,
+    ),
+  );
+  await f.log.alert("request_failed", "high");
+  assert.equal((await security.status()).gates.criticalAlerts, false);
+});
+test("production approvals require explicit true values and remain separate from technical approval", async () => {
+  const { productionApprovals, productionAuthorized } = await import(
+    "../server/activation.mjs"
+  );
+  const env = {};
+  assert.equal(productionAuthorized(env), false);
+  for (const p of productionApprovals(env)) env[p.setting] = "true";
+  assert.equal(productionAuthorized(env), true);
+  env.NEON_BAA_CONFIRMED = "false";
+  assert.equal(productionAuthorized(env), false);
+});

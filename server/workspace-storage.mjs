@@ -238,7 +238,13 @@ export class BucketProvisioner {
         Authorization: auth.token,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ accountId: auth.accountId, ...payload }),
+      // File-version listing accepts bucket parameters only; accountId causes a
+      // native API bad_request response even with a valid authorized account.
+      body: JSON.stringify(
+        method === "b2_list_file_versions"
+          ? payload
+          : { accountId: auth.accountId, ...payload },
+      ),
     });
   }
   async verify(auth, bucket) {

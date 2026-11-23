@@ -78,7 +78,7 @@ class InstanceLock:
 def source_path(value):
     p=Path(value)
     if not p.is_absolute() or str(p).startswith(('\\\\','//')):raise ValueError('Pilot supports local absolute folders only')
-    if p.is_symlink() or not p.is_dir():raise ValueError('Source must be an existing local folder')
+    if p.is_symlink() or (hasattr(p,'is_junction') and p.is_junction()) or not p.is_dir():raise ValueError('Source must be an existing local folder')
     resolved=p.resolve()
     if str(resolved).startswith(('\\\\','//')):raise ValueError('Network folders are not supported by the pilot')
     return resolved
