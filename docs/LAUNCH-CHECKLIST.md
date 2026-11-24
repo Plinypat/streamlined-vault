@@ -37,3 +37,8 @@ November 23 verification: 57 application tests passed (one PostgreSQL-only case 
 On November 23, the Streamlined Consulting administrator confirmed completion of MFA recovery/session revocation, unattended monitoring, and all four provider approvals. This is recorded as administrator attestation, not an independent document review or a newly observed scheduled workflow. MFA and monitoring evidence are current, and all cloud technical gates passed at the subsequent live check. Sorski endpoint and pilot evidence remain deferred separately.
 
 The provider confirmation is stored in the protected operational database. Applying the four existing production approval environment flags was rejected by Vercel with HTTP 403; no authenticated local CLI was available. Production authorization therefore remains false until those flags are saved and redeployed. Final portal activation review must follow that deployment. The administrator need not resubmit agreement proof to repeat this confirmation.
+
+
+## Final portal activation
+
+The administrator saved the four Production provider approval settings and the live deployment reports all four true. A fresh authenticated production preflight confirmed cloud technical readiness and production authorization. Final activation review was recorded in readiness evidence and the audit chain. The live API subsequently confirmed technicalApproval=true and launchComplete=true. Provider and live MFA/monitoring completion are attributed to administrator attestation; they are not represented as independent document review. Sorski endpoint protection and the two-night uploader pilot remain deferred and do not block portal activation. Operational checks and 30-day review expiry continue to apply.
