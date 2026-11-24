@@ -30,3 +30,10 @@ At the operator's request, practice endpoint review and the two-night Sorski pil
 The persistent yellow activation banner has been replaced with a compact header status. Security & logs retains provider approval details, cloud readiness and the independent practice-onboarding status. Removing a banner does not approve PHI processing.
 
 November 23 verification: 57 application tests passed (one PostgreSQL-only case skipped in that run), then all 18 PostgreSQL integration tests passed. The role matrix exercised viewer, uploader, editor and practice-administrator behavior, cross-practice list/download/upload/administration denial, and immediate denial after membership removal. Clerk tests cover invalid signatures/origins, pending sessions, absent/stale second factors, revoked sessions, unverified/banned users and application-owned membership. These automated tests supplement the operator-confirmed live sign-in and access assignment; live recovery-code and session-revocation acceptance remain unverified.
+
+
+## Administrator completion confirmation
+
+On November 23, the Streamlined Consulting administrator confirmed completion of MFA recovery/session revocation, unattended monitoring, and all four provider approvals. This is recorded as administrator attestation, not an independent document review or a newly observed scheduled workflow. MFA and monitoring evidence are current, and all cloud technical gates passed at the subsequent live check. Sorski endpoint and pilot evidence remain deferred separately.
+
+The provider confirmation is stored in the protected operational database. Applying the four existing production approval environment flags was rejected by Vercel with HTTP 403; no authenticated local CLI was available. Production authorization therefore remains false until those flags are saved and redeployed. Final portal activation review must follow that deployment. The administrator need not resubmit agreement proof to repeat this confirmation.
