@@ -1,3 +1,4 @@
+const NEW_USER_FORM_URL = "";
 const $ = (s) => document.querySelector(s),
   esc = (v) =>
     String(v ?? "").replace(
@@ -163,7 +164,7 @@ async function refresh() {
 function loginScreen() {
   const isDemo = config?.demo || preview;
   $("#root").innerHTML =
-    `<div class="login"><div class="loginart">${brand()}<div><span class="eyebrow">CONTROLLED ACCESS. CONNECTED STORAGE.</span><h1>Your practice data.<br>One controlled<br>workspace.</h1><p>Manage files, access, and scheduled uploads from a single portal.</p></div><p style="font-size:10px">STREAMLINED VAULT　 /　 CLIENT ACCESS</p><div class="rings"></div></div><div class="loginform"><div class="logininner"><div class="eyebrow">WELCOME TO STREAMLINED VAULT</div><h2>Access your workspace.</h2><p>Access the files that keep your practice moving.</p>${isDemo ? `<div class="notice" style="margin-top:23px">${icon("shield")}Interactive preview · synthetic data only</div><p>Choose a view to explore. No password is needed for this preview.</p><div class="demochoices"><button data-login="client"><div><h3>Practice portal</h3><p>Upload, organize, and download files</p></div>${icon("arrow")}</button><button data-login="msp"><div><h3>MSP management</h3><p>Manage practices, access, and uploaders</p></div>${icon("arrow")}</button></div><small>${preview ? "Files selected in this preview stay in browser memory and disappear on refresh." : "Local test files stay on this development computer."} Do not use patient data or real credentials.</small>` : `<div id="clerk-sign-in" style="margin-top:24px"></div><p id="clerk-auth-error" role="alert" style="color:#a45f4f;margin-top:16px"></p><button id="clerk-sign-out" class="primary hidden">Sign out and verify again</button><button id="clerk-security" class="hidden" style="margin-top:12px">Account security</button><small>Use your verified practice account and authenticator-app MFA. Need access? Contact your practice administrator.</small>`}</div></div></div>`;
+    `<div class="login"><div class="loginart">${brand()}<div><span class="eyebrow">HIPAA-COMPLIANT CLOUD STORAGE</span><h1>Your practice data.<br>One controlled<br>workspace.</h1><p>Private practice storage with encrypted transfers, MFA-protected access, and scheduled file uploads.</p></div><p style="font-size:10px">STREAMLINED VAULT　 /　 CLIENT ACCESS</p><div class="rings"></div></div><div class="loginform"><div class="logininner"><div class="eyebrow">WELCOME TO STREAMLINED VAULT</div><h2>Storage built for your practice.</h2><p>Access your workspace or request a new account.</p><details class="access-menu"><summary>Client access ${icon("arrow")}</summary><div class="access-options"><button id="returning-user">${icon("key")}<span><strong>Returning user</strong><small>Sign in to your workspace</small></span>${icon("arrow")}</button>${NEW_USER_FORM_URL ? `<a href="${esc(NEW_USER_FORM_URL)}">${icon("plus")}<span><strong>New user</strong><small>Request an account</small></span>${icon("arrow")}</a>` : `<button disabled><span><strong>New user</strong><small>Account request form coming soon</small></span></button>`}</div></details><section id="returning-panel" class="hidden" aria-label="Returning user sign-in"><button id="access-back" class="quiet">${icon("arrow")}Back to access options</button>${isDemo ? `<div class="notice" style="margin-top:23px">${icon("shield")}Interactive preview · synthetic data only</div><p>Choose a view to explore. No password is needed for this preview.</p><div class="demochoices"><button data-login="client"><div><h3>Practice portal</h3><p>Upload, organize, and download files</p></div>${icon("arrow")}</button><button data-login="msp"><div><h3>MSP management</h3><p>Manage practices, access, and uploaders</p></div>${icon("arrow")}</button></div><small>${preview ? "Files selected in this preview stay in browser memory and disappear on refresh." : "Local test files stay on this development computer."} Do not use patient data or real credentials.</small>` : `<div id="clerk-sign-in" style="margin-top:24px"></div><p id="clerk-auth-error" role="alert" style="color:#a45f4f;margin-top:16px"></p><button id="clerk-sign-out" class="primary hidden">Sign out and verify again</button><button id="clerk-security" class="hidden" style="margin-top:12px">Account security</button><small>Use your verified practice account and authenticator-app MFA. Need access? Contact your practice administrator.</small>`}</section></div></div></div>`;
   document.querySelectorAll("[data-login]").forEach(
     (b) =>
       (b.onclick = async () => {
@@ -178,16 +179,32 @@ function loginScreen() {
         }
       }),
   );
-  if (!isDemo && clerkUI) {
-    if (clerkUI.signedIn()) {
-      $("#clerk-auth-error").textContent =
-        authError || "Complete your MFA sign-in to continue.";
-      $("#clerk-sign-out").classList.remove("hidden");
-      $("#clerk-sign-out").onclick = () => clerkUI.signOut();
-      $("#clerk-security").classList.remove("hidden");
-      $("#clerk-security").onclick = () => clerkUI.openSecurity();
-    } else clerkUI.mountSignIn($("#clerk-sign-in"));
+  let mounted = false;
+  const showReturning = () => {
+    $(".access-menu").classList.add("hidden");
+    $("#returning-panel").classList.remove("hidden");
+    if (!isDemo && clerkUI && !clerkUI.signedIn() && !mounted) {
+      clerkUI.mountSignIn($("#clerk-sign-in"));
+      mounted = true;
+    }
+    $("#access-back").focus();
+  };
+  $("#returning-user").onclick = showReturning;
+  $("#access-back").onclick = () => {
+    $("#returning-panel").classList.add("hidden");
+    $(".access-menu").classList.remove("hidden");
+    $(".access-menu").open = true;
+    $("#returning-user").focus();
+  };
+  if (!isDemo && clerkUI?.signedIn()) {
+    showReturning();
+    $("#clerk-auth-error").textContent = authError || "Complete your MFA sign-in to continue.";
+    $("#clerk-sign-out").classList.remove("hidden");
+    $("#clerk-sign-out").onclick = () => clerkUI.signOut();
+    $("#clerk-security").classList.remove("hidden");
+    $("#clerk-security").onclick = () => clerkUI.openSecurity();
   }
+
 }
 const tabs = [
   ["Overview", "grid"],
