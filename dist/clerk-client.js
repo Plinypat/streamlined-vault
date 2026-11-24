@@ -13,6 +13,6 @@ export async function initialize(config){
 }
 export async function token(){return client?.session?await client.session.getToken():null;}
 export function signedIn(){return client?.session?.status==='active';}
-export function mountSignIn(element){client.mountSignIn(element,{routing:'hash',withSignUp:false,transferable:false,forceRedirectUrl:location.origin+'/',appearance:{elements:{footerAction:{display:'none'}},variables:{colorPrimary:'#2563eb',fontFamily:'Segoe UI, Arial, sans-serif',borderRadius:'0.25rem'}}});}
+export function mountSignIn(element,options={}){client.mountSignIn(element,{routing:'hash',signUpUrl:options.signUpUrl,withSignUp:false,transferable:false,forceRedirectUrl:location.origin+'/',appearance:{variables:{colorPrimary:'#2563eb',fontFamily:'Segoe UI, Arial, sans-serif',borderRadius:'0.25rem'}}});}
 export async function signOut(){if(client)await client.signOut({redirectUrl:location.origin+'/'});}
 export function openSecurity(){client?.openUserProfile();}
