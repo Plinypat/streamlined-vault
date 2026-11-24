@@ -1,3 +1,4 @@
+import { createMemberInvitations } from "./member-invitations.mjs";
 import { productionAuthorized } from "./activation.mjs";
 import { createDirectTransfers } from "./direct-transfers.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -405,6 +406,7 @@ const security = createSecurityConsole({
   workspaceStorage,
   audit,
 });
+const memberInvitations = createMemberInvitations({db,clerk:clerkAuth,env,origin,audit,demo});
 const limits = new Map();
 const server = http.createServer((req, res) =>
   requestContext.run(
@@ -511,6 +513,7 @@ const server = http.createServer((req, res) =>
           const scheduled =
             req.headers["x-vercel-cron-schedule"] === "*/15 * * * *" &&
             String(req.headers["user-agent"] || "").startsWith("vercel-cron/");
+          await memberInvitations.retryRevocations();
           const result = await security.maintenance(
             scheduled ? "security-maintenance" : "security-endpoint-check",
           );
@@ -946,8 +949,16 @@ const server = http.createServer((req, res) =>
             return send(
               res,
               200,
-              await q("SELECT email,role FROM members WHERE tenant=?", tenant),
+              await Promise.all((await q("SELECT email,role FROM members WHERE tenant=?", tenant)).map(async m => ({...m,...(user.msp ? {invitation:await memberInvitations.view(m.email)} : {})}))),
             );
+          }
+          if (tail === "/members/invitation" && method === "POST") {
+            need(user.msp,403,"Only MSP administrators can send invitations");
+            need(t.kind !== "internal",403,"Private workspaces cannot be shared");
+            need(!(await security.recoveryPending()),503,"Recovery review required");
+            const b = await body(req);
+            const outcome = await memberInvitations.send(tenant,b.email,user);
+            return send(res,outcome.ok ? 200 : 502,outcome.ok ? outcome : {error:"Email could not be sent. Retry after one minute.",...outcome});
           }
           if (tail === "/members" && method === "POST") {
             need(
@@ -993,11 +1004,7 @@ const server = http.createServer((req, res) =>
               ),
               404,
             );
-            await run(
-              "DELETE FROM members WHERE tenant=? AND email=?",
-              tenant,
-              b.email,
-            );
+            await memberInvitations.remove(tenant, b.email);
             await audit(
               tenant,
               user.email,

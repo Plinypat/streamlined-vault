@@ -56,6 +56,7 @@ test("public-key backup authenticates metadata, rejects wrong key and corruption
   await f.db.run(
     "INSERT INTO tenants(id,name,quota,status) VALUES('practice','Synthetic',4000000000000,'active')",
   );
+  await f.db.run("INSERT INTO member_invitations(id,email,tenant,actor,status,kind,provider_id,created) VALUES('inv-test','user@example.test','practice','operator','accepted','enrollment','provider-id',?)",new Date().toISOString());
   const bytes = await envelopeBackup(
     f.db,
     f.env.STORAGE_CREDENTIAL_ENCRYPTION_KEY,
@@ -72,6 +73,9 @@ test("public-key backup authenticates metadata, rejects wrong key and corruption
   assert.throws(() => decryptBackup(bad, keys.privateKey));
   assert.throws(() => decryptBackup(bytes, keys.publicKey));
   await restoreBackup(target.db, payload);
+  const restoredInvitation = await target.db.one("SELECT status,provider_id FROM member_invitations WHERE id='inv-test'");
+  assert.equal(restoredInvitation.status,'revoked');
+  assert.equal(restoredInvitation.provider_id,null);
   assert.ok(
     await target.db.one(
       "SELECT id FROM security_state WHERE id='recovery_review_required'",

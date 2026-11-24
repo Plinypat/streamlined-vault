@@ -135,7 +135,7 @@ before(async () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
         ).version,
-        5,
+        6,
       );
       await migratePostgres(upgrade); // Repeat cold starts must leave data intact.
       await upgrade.run("DELETE FROM tenants WHERE id='upgrade-fixture'");
@@ -1536,4 +1536,14 @@ test("recovery endpoints require MSP membership, CSRF and cron authorization; ev
   assert.equal(practice.value.activation, undefined);
 
   assert.ok(!JSON.stringify(status.value).includes("wrappedKey"));
+});
+
+
+test("invitation endpoint requires MSP, membership, MFA session and CSRF", async()=>{
+ const base="/api/tenants/northside/members/invitation";
+ assert.equal((await request(base,"POST",{email:"client@example.test"})).status,401);
+ assert.equal((await request(base,"POST",{email:"client@example.test"},client)).status,403);
+ assert.equal((await request(base,"POST",{email:"client@example.test"},admin,{"X-CSRF-Token":"wrong"})).status,403);
+ assert.equal((await request(base,"POST",{email:"missing@example.test"},admin)).status,404);
+ assert.equal((await request(base,"POST",{email:"client@example.test"},admin)).status,200);
 });

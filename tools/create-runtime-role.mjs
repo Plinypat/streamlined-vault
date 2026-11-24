@@ -67,6 +67,7 @@ try {
       "backup_history",
       "alert_deliveries",
       "readiness_evidence",
+      "member_invitations",
     ];
     for (const table of mutable)
       await db.exec(

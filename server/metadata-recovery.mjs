@@ -34,6 +34,7 @@ export const recoveryTables = [
   "security_alerts",
   "security_checks",
   "audit_archives",
+  "member_invitations",
 ];
 const need = (v, m) => {
   if (!v) throw Error(m);
@@ -274,6 +275,7 @@ function validatePayload(payload) {
     "Invalid recovery manifest",
   );
   key(payload.storageKey);
+  if (!Object.hasOwn(payload.tables, "member_invitations")) payload.tables.member_invitations = [];
   need(
     Object.keys(payload.tables).length === recoveryTables.length &&
       recoveryTables.every((t) => Array.isArray(payload.tables[t])),
@@ -316,6 +318,7 @@ export async function restoreBackup(db, payload) {
           "Recovery contains an unexpected column",
         );
         const value = { ...row };
+        if (table === "member_invitations") { value.status = "revoked"; value.provider_id = null; }
         if (table === "tokens") value.revoked = 1;
         if (table === "devices") {
           value.revoked = 1;

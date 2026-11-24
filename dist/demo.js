@@ -291,6 +291,12 @@ export async function request(path, method = "GET", b = {}) {
     };
   if (suffix === "/audit") return events.filter((e) => e.tenant === t);
   if (suffix === "/notices") return [];
+  if (suffix === "/members/invitation" && method === "POST") {
+    const member = members.find(m => m.tenant === t && m.email === b.email);
+    if (!member) throw Error("Assign the user first");
+    member.invitation = {status:"accepted",kind:"enrollment",lastSent:new Date().toISOString(),retryAfter:60000};
+    return {ok:true,status:"accepted",kind:"enrollment"};
+  }
   if (suffix === "/members") {
     if (method === "POST") {
       const old = members.find((m) => m.tenant === t && m.email === b.email);

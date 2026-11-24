@@ -144,6 +144,12 @@ export function createClerkAuth({ env, origin, resolveIdentity, client }) {
   return {
     config,
     authenticate,
+    invitationAccountExists: async (email) => (await sdk.users.getUserList({emailAddress:[email],limit:1})).data.length > 0,
+    createInvitation: (email) => sdk.invitations.createInvitation({emailAddress:email,expiresInDays:7,ignoreExisting:true,notify:true}),
+    revokeInvitation: async (id) => {
+      try { return await sdk.invitations.revokeInvitation(id); }
+      catch(e) { if (e.status === 404 || e.errors?.some(x => ['invitation_already_accepted','invitation_already_revoked'].includes(x.code))) return; throw e; }
+    },
     revoke: (sessionId) => sdk.sessions.revokeSession(sessionId),
   };
 }

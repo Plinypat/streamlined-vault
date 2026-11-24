@@ -34,6 +34,7 @@ const tables = [
   "backup_history",
   "alert_deliveries",
   "readiness_evidence",
+  "member_invitations",
 ];
 export function postgresSql(sql) {
   let n = 0;
@@ -195,6 +196,7 @@ const migrations = [
   { version: 3, file: "003-direct-transfers.sql" },
   { version: 4, file: "004-security.sql" },
   { version: 5, file: "005-recovery-operations.sql" },
+  { version: 6, file: "006-member-invitations.sql" },
 ];
 export async function migratePostgres(db) {
   try {
@@ -295,6 +297,7 @@ export async function openDatabase({ env, demo, data }) {
         .replaceAll("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
         .replaceAll("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS "),
     );
+    await db.exec(readFileSync(new URL("./migrations/006-member-invitations.sql", import.meta.url), "utf8").replaceAll("streamlined_vault.", "").replaceAll("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ").replaceAll("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS "));
     for (const table of ["audit", "security_events", "audit_archives"])
       for (const operation of ["UPDATE", "DELETE"])
         await db.exec(

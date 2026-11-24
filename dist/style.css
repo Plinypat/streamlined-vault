@@ -1328,3 +1328,6 @@ dialog::backdrop { background: #08132699; backdrop-filter: blur(2px); }
 
 .access-menu .access-open:disabled { opacity: 1; cursor: default; color: #61738c; }
 .access-menu .access-open:disabled svg { display: none; }
+
+.invite-status { font-size: 12px; color: #526b8f; }
+.invite-status small { display: block; font-size: 10px; margin-top: 4px; }

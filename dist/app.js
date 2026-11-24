@@ -655,9 +655,15 @@ function renderAudit() {
   $("#pagebody").innerHTML =
     `<div class="card"><div class="cardhead"><h2>Workspace activity</h2><span style="font-size:10px;color:#8f9ca7">Most recent 500 events</span></div><div class="tablewrap"><table><thead><tr><th>Event</th><th>Actor</th><th>Time</th><th>Reference</th></tr></thead><tbody>${data.audit.map((e) => `<tr><td>${esc(e.action)}</td><td>${esc(e.actor)}</td><td>${date(e.created)}</td><td style="color:#9ba6af;font-family:monospace;font-size:9px">${esc(e.resource?.slice(0, 12) || "—")}</td></tr>`).join("")}</tbody></table></div>${!data.audit.length ? empty("A fresh start", "Activity will appear as your team uses the workspace.") : ""}</div>`;
 }
+let invitationRefreshTimer;
 function renderTeam() {
+  clearTimeout(invitationRefreshTimer);
+  const cooldowns = data.members.map(m => m.invitation?.retryAfter || 0).filter(ms => ms > 0);
+  if (cooldowns.length && !preview) invitationRefreshTimer = setTimeout(() => {
+    if (page === "Team & access" && !$("#modal").open) navigate(page);
+  }, Math.min(...cooldowns) + 100);
   $("#pagebody").innerHTML =
-    `<div class="card"><div class="cardhead"><h2>Users for ${esc(user.tenants.find((t) => t.id === tenant)?.name)}</h2><button class="primary" data-action="invite">${icon("plus")}Add user</button></div>${data.members.length ? data.members.map((m) => `<div class="row"><div class="automation"><span class="avatar">${esc(m.email.slice(0, 2).toUpperCase())}</span><div><h3>${esc(m.email)}</h3><p>${{ admin: "Manage practice files, members, and uploaders", editor: "Upload, download, rename, and restore files", viewer: "Browse and download files", uploader: "Upload files only" }[m.role]}</p></div></div><div class="actions"><span class="tag">${esc(m.role)}</span>${m.email !== user.email ? `<button data-remove="${esc(m.email)}" class="quiet" title="Remove access">${icon("close")}</button>` : ""}</div></div>`).join("") : empty("No users assigned to this practice", "Click Add user and enter the exact email used to sign in. Creating an account alone does not grant practice access.")}</div><div class="card section quickcard"><h2>Simple access, clear responsibilities.</h2><p style="margin-top:10px">This list shows users assigned to this practice, not everyone who has signed up. Click Add user, enter their exact sign-in email and choose a role. They can then sign in again. No invitation email is sent. Account enrollment and MFA are separate.</p></div>`;
+    `<div class="card"><div class="cardhead"><h2>Users for ${esc(user.tenants.find((t) => t.id === tenant)?.name)}</h2><button class="primary" data-action="invite">${icon("plus")}Add user</button></div>${data.members.length ? data.members.map((m) => `<div class="row"><div class="automation"><span class="avatar">${esc(m.email.slice(0, 2).toUpperCase())}</span><div><h3>${esc(m.email)}</h3><p>${{ admin: "Manage practice files, members, and uploaders", editor: "Upload, download, rename, and restore files", viewer: "Browse and download files", uploader: "Upload files only" }[m.role]}</p></div></div><div class="actions"><span class="tag">${esc(m.role)}</span>${user.msp ? `<span class="invite-status">${esc(({not_invited:"Not invited",accepted:m.invitation?.kind === "instructions" ? "Instructions sent" : "Invitation sent",ready:"Account ready",expired:"Expired",failed:"Send failed",revoked:"Revoked",revocation_pending:"Revocation pending",sending:"Sending"})[m.invitation?.status || "not_invited"] || "Not invited")}${m.invitation?.lastSent ? `<small>${date(m.invitation.lastSent)}</small>` : ""}</span><button data-inviteuser="${esc(m.email)}" ${m.invitation?.retryAfter > 0 ? "disabled" : ""}>${m.invitation?.status === "ready" ? "Send sign-in instructions" : m.invitation?.lastSent ? "Resend email" : "Send invitation"}</button>` : ""}${m.email !== user.email ? `<button data-remove="${esc(m.email)}" class="quiet" title="Remove access">${icon("close")}</button>` : ""}</div></div>`).join("") : empty("No users assigned to this practice", "Click Add user and enter the exact email used to sign in. Creating an account alone does not grant practice access.")}</div><div class="card section quickcard"><h2>Simple access, clear responsibilities.</h2><p style="margin-top:10px">This list shows users assigned to this practice, not everyone who has signed up. Click Add user, enter their exact sign-in email and choose a role. Then use Send invitation to email enrollment instructions. Existing account holders receive sign-in instructions. Only MSP administrators can send these emails. Provider acceptance does not confirm inbox delivery.</p></div>`;
 }
 function renderClients() {
   $("#pagebody").innerHTML = `<div class="clientgrid">${user.tenants
@@ -1267,6 +1273,13 @@ document.addEventListener("click", async (e) => {
       await navigate(page);
       return toast("Browser transfers configured");
     }
+    if (d.inviteuser)
+      return modal("Send user email", `<p>Send enrollment or sign-in instructions to <strong>${esc(d.inviteuser)}</strong>?</p><p>The assigned practice role will stay unchanged. Enrollment invitations expire after seven days.</p>`, async () => {
+        await api(base() + "/members/invitation", "POST", {email:d.inviteuser});
+        $("#modal").close();
+        await navigate("Team & access");
+        toast("Email accepted by provider; inbox delivery is not yet confirmed");
+      }, "Send email");
     if (d.manageusers) {
       tenant = d.manageusers;
       return navigate("Team & access");
@@ -1429,7 +1442,7 @@ async function boot() {
           direct: false,
         },
       };
-      demoAPI = await import("./demo.js");
+      demoAPI = await import("./demo.js?v=6");
     } else throw Error("Portal configuration unavailable");
     if (!config.demo && config.auth === "clerk") {
       clerkUI = await import("./clerk-client.js");
