@@ -1313,10 +1313,10 @@ dialog::backdrop { background: #08132699; backdrop-filter: blur(2px); }
 .sidebar nav::-webkit-scrollbar-track { background: #0d1729; }
 
 .access-menu { margin-top: 28px; border: 1px solid #cbd7e7; border-radius: 5px; background: #fff; }
-.access-menu summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; padding: 17px 18px; font-weight: 650; color: #16365e; }
-.access-menu summary::-webkit-details-marker { display: none; }
-.access-menu summary:focus-visible { outline: 3px solid #60a5fa; outline-offset: 3px; }
-.access-menu[open] summary { border-bottom: 1px solid var(--line); }
+.access-menu .access-open { width: 100%; border: 0; background: transparent; cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; padding: 17px 18px; font-weight: 650; color: #16365e; }
+
+.access-menu .access-open:focus-visible { outline: 3px solid #60a5fa; outline-offset: 3px; }
+.access-menu .access-open[aria-expanded="true"] { border-bottom: 1px solid var(--line); }
 .access-options { padding: 8px; display: grid; gap: 6px; }
 .access-options button, .access-options a { display: flex; width: 100%; padding: 14px 10px; gap: 12px; text-align: left; align-items: center; border: 0; color: #243d61; text-decoration: none; background: transparent; }
 .access-options button:hover, .access-options a:hover { background: #edf3ff; }
@@ -1325,3 +1325,6 @@ dialog::backdrop { background: #08132699; backdrop-filter: blur(2px); }
 .access-options small { margin: 3px 0 0; color: #61738c; font-size: 12px; }
 #access-back { margin: 22px 0 4px; font-size: 12px; }
 #access-back svg { transform: rotate(180deg); }
+
+.access-menu .access-open:disabled { opacity: 1; cursor: default; color: #61738c; }
+.access-menu .access-open:disabled svg { display: none; }
