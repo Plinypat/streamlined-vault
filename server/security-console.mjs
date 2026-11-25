@@ -259,6 +259,7 @@ export function createSecurityConsole({
   }
   async function maintenance(actor = "security-maintenance") {
     let claimed = false;
+    let phase = "security_checks";
     const started = Date.now();
     await db.transaction(async () => {
       await db.lock("security:maintenance");
@@ -322,6 +323,7 @@ export function createSecurityConsole({
           }
       }
       await log.event("maintenance_started", { actor });
+      phase = "archive";
       let result = { ok: true, archivedBatches: 0, synthetic: demo };
       for (let i = 0; i < 16 && Date.now() - started < 90000; i++) {
         const batch = await archive.flush();
@@ -336,12 +338,6 @@ export function createSecurityConsole({
         synthetic: demo,
         source: actor === "security-maintenance" ? "scheduled" : "manual",
       });
-      if (actor === "security-maintenance")
-        await archive.save("maintenance_last_scheduled_success", {
-          at: new Date().toISOString(),
-          trigger: "vercel_cron",
-        });
-      await archive.save("maintenance_last_failure", null);
       await check(
         "log_integrity",
         "",
@@ -355,8 +351,11 @@ export function createSecurityConsole({
           archive: verified,
         },
       );
-      if (actor === "security-maintenance")
+      if (actor === "security-maintenance") {
+        phase = "monitor_delivery";
         await heartbeat(env.HEALTHCHECKS_MAINTENANCE_URL, "success");
+      }
+      phase = "notifications";
       const priorFailure = await db.one(
         "SELECT id FROM security_alerts WHERE code='maintenance_failed' AND status='open'",
       );
@@ -373,6 +372,11 @@ export function createSecurityConsole({
       await notifications.drain();
       const b = await backups.status();
       if (b.restoreReviewDue) await log.alert("restore_review_due", "warning");
+      if (actor === "security-maintenance")
+        await archive.save("maintenance_last_scheduled_success", {
+          at: new Date().toISOString(), trigger: "vercel_cron",
+        });
+      await archive.save("maintenance_last_failure", null);
       return { ...result, verified };
     } catch (e) {
       await log.event("maintenance_failed", { actor, severity: "high" });
@@ -383,11 +387,14 @@ export function createSecurityConsole({
       await notifications.drain();
       await archive.save("maintenance_last_failure", {
         at: new Date().toISOString(),
-        code: e.providerCode || "MAINTENANCE_FAILED",
+        code: e.code === "MONITOR_DELIVERY_FAILED" ? e.code : e.providerCode || "MAINTENANCE_FAILED",
+        phase,
         message:
           e.code === "ARCHIVE_CONFIGURATION" || (e.status && e.status < 500)
             ? e.message
-            : "Maintenance failed; archive provisioning/retention configuration needs review",
+            : phase === "monitor_delivery"
+              ? "Security checks completed, but the independent monitoring heartbeat could not be delivered"
+              : "Maintenance failed during " + phase + "; review the latest security checks",
       });
       throw e;
     } finally {

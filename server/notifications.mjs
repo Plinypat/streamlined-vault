@@ -18,7 +18,7 @@ export function alertCategory(code) {
       : "Security check requires attention")
   );
 }
-export async function heartbeat(url, kind, { fetcher = fetch } = {}) {
+export async function heartbeat(url, kind, { fetcher = fetch, retryDelay = 250 } = {}) {
   if (!url) return { configured: false };
   const u = new URL(url);
   if (
@@ -30,14 +30,25 @@ export async function heartbeat(url, kind, { fetcher = fetch } = {}) {
     u.password
   )
     throw Error("Invalid monitor configuration");
-  const response = await fetcher(u.href + (kind === "failure" ? "/fail" : ""), {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await fetcher(u.href + (kind === "failure" ? "/fail" : ""), {
     method: "POST",
     body: "",
     redirect: "error",
     signal: AbortSignal.timeout(8000),
-  });
-  if (!response.ok) throw Error("Monitor delivery failed");
-  return { configured: true, accepted: true };
+      });
+      if (response.ok) return { configured: true, accepted: true };
+      if (response.status !== 429 && response.status < 500)
+        throw Object.assign(Error("Monitor delivery rejected"), { permanent: true });
+    } catch (error) {
+      if (error.permanent || attempt === 1)
+        throw Object.assign(Error("Monitoring heartbeat delivery failed"), { code: "MONITOR_DELIVERY_FAILED" });
+    }
+    if (attempt === 1)
+      throw Object.assign(Error("Monitoring heartbeat delivery failed"), { code: "MONITOR_DELIVERY_FAILED" });
+    await new Promise(resolve => setTimeout(resolve, retryDelay));
+  }
 }
 export function createNotifications({ db, env, fetcher = fetch }) {
   const configured = () =>
