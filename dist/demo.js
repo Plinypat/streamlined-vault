@@ -291,6 +291,8 @@ export async function request(path, method = "GET", b = {}) {
     };
   if (suffix === "/audit") return events.filter((e) => e.tenant === t);
   if (suffix === "/notices") return [];
+  if (suffix === "/uploader-release") return {configured:true,version:"0.3.1",sha256:"0".repeat(64),bytes:25*1024*1024,pilot:true,signed:false};
+  if (suffix === "/uploader-release/download") return {demo:true};
   if (suffix === "/members/invitation" && method === "POST") {
     const member = members.find(m => m.tenant === t && m.email === b.email);
     if (!member) throw Error("Assign the user first");

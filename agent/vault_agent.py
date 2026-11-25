@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import urllib.request, urllib.error
 from schedule import due, mark_attempt
 
-VERSION='0.3.0'
+VERSION='0.3.1'
 
 class PortalError(RuntimeError):
     def __init__(self,status):self.status=status;super().__init__('Portal request failed (HTTP '+str(status)+')')

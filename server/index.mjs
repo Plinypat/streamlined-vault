@@ -1,3 +1,4 @@
+import { createUploaderRelease } from "./uploader-release.mjs";
 import { recoveryRequestAllowed, uploadPrincipal, canManageUpload, createRateLimiter } from "./request-security.mjs";
 import { createMemberInvitations } from "./member-invitations.mjs";
 import { productionAuthorized } from "./activation.mjs";
@@ -415,6 +416,7 @@ const security = createSecurityConsole({
   audit,
 });
 const memberInvitations = createMemberInvitations({db,clerk:clerkAuth,env,origin,audit,demo});
+const uploaderRelease = createUploaderRelease({db,env,demo,audit});
 const rateLimiter = createRateLimiter();
 const server = http.createServer((req, res) =>
   requestContext.run(
@@ -884,6 +886,14 @@ const server = http.createServer((req, res) =>
               200,
               await mspConsole.savePlan(tenant, await body(req), user.email),
             );
+          }
+          if (tail === "/uploader-release" && method === "GET") {
+            await tenantAccess(user,tenant,false,true);
+            return send(res,200,await uploaderRelease.status());
+          }
+          if (tail === "/uploader-release/download" && method === "POST") {
+            await tenantAccess(user,tenant,false,true);
+            return send(res,200,await uploaderRelease.download(tenant,user.email));
           }
           if (tail === "/devices" || tail.startsWith("/devices/"))
             return await devices.portal(req, res, user, tenant, tail);

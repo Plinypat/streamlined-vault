@@ -1569,6 +1569,18 @@ test("account responses exclude private session binding fields",async()=>{
 test("malformed JSON shapes produce client errors rather than server failures",async()=>{
  for(const value of [null,[],42,'text'])assert.equal((await request('/api/tenants','POST',value,admin)).status,400);
 });
+test("installer downloads require authenticated practice administration and CSRF",async()=>{
+ const path='/api/tenants/northside/uploader-release';
+ assert.equal((await request(path)).status,401);
+ assert.equal((await request(path+'/download','POST',{},admin,{'X-CSRF-Token':'wrong'})).status,403);
+ assert.equal((await request(path,'GET',undefined,admin)).value.configured,true);
+ assert.equal((await request(path+'/download','POST',{},admin)).value.demo,true);
+ const practice=await request('/api/tenants','POST',{name:'Installer permissions'},admin),base='/api/tenants/'+practice.value.id+'/uploader-release';
+ assert.equal((await request(base,'GET',undefined,client)).status,403);
+ await request('/api/tenants/'+practice.value.id+'/members','POST',{email:'client@example.test',role:'viewer'},admin);
+ assert.equal((await request(base,'GET',undefined,client)).status,403);
+ assert.equal((await request(base+'/download','POST',{},client)).status,403);
+});
 test("restored database blocks every production mutation and transfer route",async()=>{
  const metadata=testPostgres ? postgresDatabase(new pg.Pool({connectionString:testPostgres,ssl:false})) : await openDatabase({env:{},demo:true,data:dir});
  try{

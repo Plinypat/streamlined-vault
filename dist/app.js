@@ -315,7 +315,7 @@ async function navigate(p) {
   if (["Overview", "Files"].includes(p))
     action.innerHTML = `<button data-action="newfolder">${icon("folder")}New folder</button><button class="primary" data-action="upload">${icon("plus")}Upload files</button>`;
   if (p === "Uploaders")
-    action.innerHTML = `<button class="primary" data-action="newdevice">${icon("plus")}Enroll an uploader</button>`;
+    action.innerHTML = `<button class="primary" data-action="newdevice">${icon("plus")}Add uploader</button>`;
   if (p === "Activity")
     action.innerHTML = `<button data-action="export">${icon("download")}Export activity</button>`;
   if (p === "Team & access")
@@ -614,7 +614,7 @@ function renderUploaders() {
             "Put uploads on autopilot",
             "Enroll a practice computer to begin scheduled uploads.",
           )
-    }</div><div class="detailgrid section"><div class="card quickcard"><h2>Set it up once. Let it upload.</h2><p style="margin-top:12px">1. Create a one-time enrollment credential.</p><p>2. Your MSP installs the branded uploader and selects local folders.</p><p>3. Choose a schedule here. The computer uploads while awake and online.</p><button data-action="uploaderhelp">View setup details ${icon("arrow")}</button></div><div class="card quickcard"><h2>You stay in control.</h2><p style="margin-top:12px">Pause or revoke a device at any time. Interrupted uploads resume from completed parts.</p><p>Local and cloud files are never deleted by this uploader. A changed file is stored as a new object and counts toward your 4 TB allowance.</p><p>Schedule changes apply on the next device contact. Folder access must be changed locally by your administrator.</p></div></div>`;
+    }</div><div class="detailgrid section"><div class="card quickcard"><h2>Set it up once. Let it upload.</h2><p style="margin-top:12px">1. Download the current Windows installer from Add uploader.</p><p>2. Configure the uploader here, then get a fresh enrollment code.</p><p>3. Run the installer on the practice computer, select local folders and enter the code. It uploads while awake and online.</p><button data-action="downloaduploader">${icon("download")}Download current installer</button> <button data-action="uploaderhelp">View setup details ${icon("arrow")}</button></div><div class="card quickcard"><h2>You stay in control.</h2><p style="margin-top:12px">Pause or revoke a device at any time. Interrupted uploads resume from completed parts.</p><p>Local and cloud files are never deleted by this uploader. A changed file is stored as a new object and counts toward your 4 TB allowance.</p><p>Schedule changes apply on the next device contact. Folder access must be changed locally by your administrator.</p></div></div>`;
 }
 function deviceFields(d) {
   const p = d?.policy || {
@@ -639,14 +639,42 @@ function devicePolicy() {
         : { kind: "interval", minutes: Number(value) },
   };
 }
-function enrollmentDialog(r) {
-  modal(
-    "Connect your practice computer",
-    `<p>${config.demo ? "Preview credential — cannot enroll a real device." : "This credential expires in 15 minutes and can be used once."}</p><div class="tokenbox">${esc(r.code)}</div><p style="margin-top:18px">Your MSP uses the Streamlined Vault pilot installer on the practice computer, selects the folders, and enters this credential at the prompt.</p><p>The pilot installer requires Windows, PowerShell 7, and Python 3.10+. A signed executable installer is not available yet. Do not use patient data until production activation.</p>`,
-    null,
-  );
+async function downloadUploader(release) {
+  if (config.demo || preview) { toast("Preview only: no installer was downloaded"); return; }
+  const grant = await api(base() + "/uploader-release/download", "POST", {});
+  if (release && grant.version !== release.version) throw Error("A new installer was released. Close this window and open Add uploader again.");
+  const anchor = document.createElement("a");
+  anchor.href = grant.url;
+  anchor.rel = "noreferrer";
+  anchor.referrerPolicy = "no-referrer";
+  document.body.append(anchor); anchor.click(); anchor.remove();
+}
+async function uploaderSetup() {
+  const release = await api(base() + "/uploader-release");
+  if (!release.configured) throw Error(release.message || "Installer is not available yet");
+  modal("1. Download the Windows installer", `<p>Set up this practice computer directly from the portal.</p><p><strong>Windows x64 · v${esc(release.version)}</strong> · ${bytes(release.bytes)}</p><p>Pilot release · unsigned. Extract the entire ZIP, then run Streamlined-Vault-Pilot-Setup.exe as administrator. The package includes its Python runtime.</p><button id="downloadinstaller" class="primary">${icon("download")}Download Windows installer (.zip)</button><p id="installer-download-state" role="status">Download the installer, then continue to get your enrollment code.</p><details><summary>Verify your download</summary><p class="release-checksum">SHA-256: ${esc(release.sha256)}</p></details>`, async () => {
+    modal("2. Configure your uploader", deviceFields(), async () => {
+      const r = await api(base() + "/devices", "POST", {label:$("#devicelabel").value.trim(),...devicePolicy()});
+      $("#modal").close(); await navigate("Uploaders"); enrollmentDialog(r,release);
+    }, "Create enrollment code");
+  }, "Continue to enrollment");
+  $("#confirm").disabled = true;
+  $("#downloadinstaller").onclick = async () => {
+    const button = $("#downloadinstaller"); button.disabled = true;
+    try {
+      await downloadUploader(release);
+      $("#installer-download-state").textContent = config.demo || preview ? "Preview: installer download simulated. Continue to explore enrollment." : "Download requested. Once it finishes, continue to create your 15-minute code.";
+      $("#confirm").disabled = false;
+    } catch(e) { $("#modal .formerror").textContent=e.message; }
+    finally { button.disabled=false; }
+  };
+}
+function enrollmentDialog(r, release) {
+  modal("3. Connect your practice computer", `<p>${config.demo ? "Preview code: cannot enroll a real computer." : "Your one-time enrollment code expires in 15 minutes."}</p><div class="tokenbox">${esc(r.code)}</div><button id="copyenrollment">Copy code</button><ol><li>Extract the installer ZIP and run Streamlined-Vault-Pilot-Setup.exe as administrator.</li><li>For the pilot, select a new empty local folder for non-patient test files.</li><li>Paste this code into the installer. Keep the computer awake and connected for scheduled uploads.</li></ol><p>Need the package again? <button data-action="downloaduploader">Download current installer</button></p>${release ? `<p>Installer v${esc(release.version)} · Windows x64 · unsigned pilot</p>` : ""}`, null);
+  $("#copyenrollment").onclick = async () => { try { await navigator.clipboard.writeText(r.code); toast("Enrollment code copied"); } catch { toast("Select and copy the code above"); } };
   $("#cancel").textContent = "Done";
 }
+
 function renderTransfers() {
   $("#pagebody").innerHTML =
     `<div class="card"><div class="cardhead"><h2>Upload queue</h2><span style="font-size:11px;color:#98a6ae">This browser session</span></div><div id="transferlist">${transfers.length ? transfers.map((t) => `<div class="transfer"><span class="fileicon">${icon("file")}</span><div class="transferbody"><h3>${esc(t.file.name)}</h3><div class="progress"><i style="width:${t.percent}%"></i></div><p>${esc(t.status)} · ${t.percent}% · ${bytes(t.file.size)}${t.message ? " · " + esc(t.message) : ""}</p></div><div class="actions">${t.status === "Uploading" ? `<button data-pause="${t.local}">${icon("pause")}Pause</button>` : ["Paused", "Failed"].includes(t.status) ? `<button data-resume="${t.local}">${icon("play")}Resume</button><button data-cancelupload="${t.local}" title="Cancel upload">${icon("close")}</button>` : icon("check")}</div></div>`).join("") : empty("No transfers yet", "Choose files in your workspace to start uploading.")}</div></div>`;
@@ -1299,21 +1327,12 @@ document.addEventListener("click", async (e) => {
         },
         "Assign access",
       );
-    if (d.action === "newdevice")
-      return modal(
-        "Enroll a practice uploader",
-        deviceFields(),
-        async () => {
-          const r = await api(base() + "/devices", "POST", {
-            label: $("#devicelabel").value.trim(),
-            ...devicePolicy(),
-          });
-          $("#modal").close();
-          await navigate("Uploaders");
-          enrollmentDialog(r);
-        },
-        "Create enrollment",
-      );
+    if (d.action === "downloaduploader") {
+      b.disabled = true;
+      try { await downloadUploader(); } finally { b.disabled = false; }
+      return;
+    }
+    if (d.action === "newdevice") return await uploaderSetup();
     if (d.enrollment) {
       const r = await api(
         base() + `/devices/${d.enrollment}/enrollment`,
@@ -1387,7 +1406,7 @@ document.addEventListener("click", async (e) => {
     if (d.action === "uploaderhelp")
       return modal(
         "Set up a scheduled uploader",
-        `<p>The MSP installs the pilot background agent on an existing Windows computer. Source folders are selected locally, and schedules are configured in this portal.</p><p>The agent runs at startup using Windows Task Scheduler. It resumes transfers and reports bounded run summaries. It never deletes source or cloud files.</p><p>The computer must remain awake and online. This preview cannot install or contact a real uploader. Production rollout requires signed packaging, deployment configuration and live acceptance testing.</p>`,
+        `<p>Download the current Windows installer from Add uploader and run it on the practice computer. Source folders are selected locally, and schedules are configured in this portal.</p><p>The agent runs at startup using Windows Task Scheduler. It resumes transfers and reports bounded run summaries. It never deletes source or cloud files.</p><p>The computer must remain awake and online. This preview cannot install or contact a real uploader. Production rollout requires signed packaging, deployment configuration and live acceptance testing.</p>`,
         null,
       );
     if (d.action === "export") {
@@ -1442,7 +1461,7 @@ async function boot() {
           direct: false,
         },
       };
-      demoAPI = await import("./demo.js?v=6");
+      demoAPI = await import("./demo.js?v=7");
     } else throw Error("Portal configuration unavailable");
     if (!config.demo && config.auth === "clerk") {
       clerkUI = await import("./clerk-client.js");

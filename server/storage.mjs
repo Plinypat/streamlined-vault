@@ -219,14 +219,14 @@ export class CloudStorage {
       until: r.Retention?.RetainUntilDate?.toISOString(),
     };
   }
-  async put(key, bytes) {
+  async put(key, bytes, {contentType = "application/json"} = {}) {
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
         Key: key,
         Body: bytes,
         ServerSideEncryption: "AES256",
-        ContentType: "application/json",
+        ContentType: contentType,
       }),
     );
   }
