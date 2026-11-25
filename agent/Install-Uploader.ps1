@@ -14,17 +14,19 @@ foreach ($folder in $Source) {
     if ($folder.StartsWith('\\') -or -not [IO.Path]::IsPathRooted($folder) -or -not (Test-Path -LiteralPath $folder -PathType Container)) { throw 'Choose existing local absolute folders; network shares are not supported by this pilot installer.' }
 }
 $PythonPath=(Resolve-Path -LiteralPath $PythonPath).Path
-$programPrefix=[IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\')+'\'
+$programPrefix=[IO.Path]::GetFullPath([Environment]::GetFolderPath('ProgramFiles')).TrimEnd('\')+'\'
 if (-not $PythonPath.StartsWith($programPrefix,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($PythonPath) -ne 'python.exe') { throw 'Use a machine-wide Python installation in Program Files. Running a user-writable Python executable as SYSTEM is not permitted.' }
 & $PythonPath -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)'
 if ($LASTEXITCODE -ne 0) { throw 'Python 3.10 or newer is required.' }
-$installRoot=Join-Path $env:ProgramFiles 'Streamlined Vault Uploader'
-$stateRoot=Join-Path $env:ProgramData 'StreamlinedVault'
-if (Test-Path -LiteralPath (Join-Path $stateRoot 'config.json')) { throw 'Uploader is already enrolled. Revoke it and follow the re-enrollment procedure before replacing its credentials.' }
-New-Item -ItemType Directory -Force -Path $installRoot,$stateRoot | Out-Null
+$installRoot=Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Streamlined Vault Uploader'
+$stateRoot=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'StreamlinedVault'
+foreach ($target in @($installRoot,$stateRoot)) {
+    if (Get-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue) { throw 'An installation directory already exists. Review it before installing or re-enrolling; existing directories are never reused.' }
+}
+New-Item -ItemType Directory -Path $installRoot,$stateRoot | Out-Null
 # Protect both executable files and local metadata before writing credentials.
 foreach ($folder in @($installRoot,$stateRoot)) {
-    & icacls.exe $folder /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    & (Join-Path ([Environment]::GetFolderPath('System')) 'icacls.exe') $folder /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Unable to protect uploader folder permissions.' }
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'vault_agent.py'),(Join-Path $PSScriptRoot 'schedule.py') -Destination $installRoot -Force

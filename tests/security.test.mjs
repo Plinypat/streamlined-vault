@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import pg from "pg";
-import { postgresDatabase, migratePostgres } from "../server/database.mjs";
+import { postgresDatabase, migratePostgres, openDatabase } from "../server/database.mjs";
 import { createWorkspaceStorage } from "../server/workspace-storage.mjs";
 
 const testPostgres = process.env.TEST_POSTGRES_URL;
@@ -135,7 +135,7 @@ before(async () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
         ).version,
-        6,
+        7,
       );
       await migratePostgres(upgrade); // Repeat cold starts must leave data intact.
       await upgrade.run("DELETE FROM tenants WHERE id='upgrade-fixture'");
@@ -1546,4 +1546,36 @@ test("invitation endpoint requires MSP, membership, MFA session and CSRF", async
  assert.equal((await request(base,"POST",{email:"client@example.test"},admin,{"X-CSRF-Token":"wrong"})).status,403);
  assert.equal((await request(base,"POST",{email:"missing@example.test"},admin)).status,404);
  assert.equal((await request(base,"POST",{email:"client@example.test"},admin)).status,200);
+});
+
+
+test("upload-only accounts cannot inspect, resume or cancel another actor's upload",async()=>{
+ const practice=await request('/api/tenants','POST',{name:'Upload ownership boundary'},admin);
+ const base='/api/tenants/'+practice.value.id;
+ await request(base+'/members','POST',{email:'client@example.test',role:'uploader'},admin);
+ const payload={name:'private-name.txt',folder:'Test',size:1,requestId:'11111111-1111-4111-8111-111111111111'};
+ const other=await request(base+'/uploads','POST',payload,admin);assert.equal(other.status,201);
+ for(const [suffix,method,body] of [['','GET'],['','DELETE',{}],['/parts/1/sign','POST',{md5:'AAAAAAAAAAAAAAAAAAAAAA=='}],['/complete','POST',{}]])assert.equal((await request(base+'/uploads/'+other.value.id+suffix,method,body,client)).status,403);
+ assert.equal((await request(base+'/uploads','POST',payload,client)).status,403);
+ const own=await request(base+'/uploads','POST',{...payload,requestId:'22222222-2222-4222-8222-222222222222'},client);assert.equal(own.status,201);
+ assert.equal((await request(base+'/uploads/'+own.value.id,'GET',undefined,client)).status,200);
+ assert.equal((await request(base+'/uploads/'+own.value.id,'DELETE',{},client)).status,200);
+ await request(base+'/uploads/'+other.value.id,'DELETE',{},admin);
+});
+test("account responses exclude private session binding fields",async()=>{
+ const me=await request('/api/me','GET',undefined,admin);assert.equal(me.status,200);
+ for(const field of ['sessionHash','clerkId','clerkSessionId','tokenId'])assert.equal(Object.hasOwn(me.value,field),false);
+});
+test("malformed JSON shapes produce client errors rather than server failures",async()=>{
+ for(const value of [null,[],42,'text'])assert.equal((await request('/api/tenants','POST',value,admin)).status,400);
+});
+test("restored database blocks every production mutation and transfer route",async()=>{
+ const metadata=testPostgres ? postgresDatabase(new pg.Pool({connectionString:testPostgres,ssl:false})) : await openDatabase({env:{},demo:true,data:dir});
+ try{
+  await metadata.run("INSERT INTO security_state(id,value,updated) VALUES('recovery_review_required',?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",JSON.stringify({isolated:true}),new Date().toISOString());
+  for(const [path,method,body] of [['/api/tenants/northside/uploads/missing','GET'],['/api/tenants/northside/uploads/missing/parts/1/sign','POST',{}],['/api/tenants/northside/uploads/missing/complete','POST',{}],['/api/msp/security/storage-check','POST',{tenant:'northside'}],['/api/tenants','POST',{name:'Blocked'}]])assert.equal((await request(path,method,body,admin)).status,503,path);
+  assert.equal((await request('/internal/metadata-backup','GET',undefined,undefined,{Authorization:'Bearer synthetic-local-maintenance-key-32chars-only'})).status,503);
+  assert.equal((await request('/health')).status,200);
+  assert.equal((await request('/api/msp/security','GET',undefined,admin)).status,200);
+ }finally{await metadata.run("DELETE FROM security_state WHERE id='recovery_review_required'");await metadata.close();}
 });

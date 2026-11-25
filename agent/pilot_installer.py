@@ -14,22 +14,33 @@ def validate_source(value):
 def verify_runtime(path):
     if hashlib.sha256(Path(path).read_bytes()).hexdigest()!=RUNTIME_SHA256:raise ValueError('Bundled runtime verification failed. Obtain a fresh package.')
 
+def known_folder(folder_id):
+    value=ctypes.create_unicode_buffer(260)
+    if ctypes.windll.shell32.SHGetFolderPathW(None,folder_id,None,0,value)!=0 or not value.value:raise ValueError('Windows protected folder lookup failed.')
+    return Path(value.value)
+
+def system_tool(name):
+    if name not in [system_tool('icacls.exe'),'schtasks.exe']:raise ValueError('Unsupported system tool.')
+    value=ctypes.create_unicode_buffer(260)
+    if not ctypes.windll.kernel32.GetSystemDirectoryW(value,len(value)):raise ValueError('Windows system folder lookup failed.')
+    return str(Path(value.value)/name)
+
 def command(args,**kwargs):
     result=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),**kwargs)
     if result.returncode:raise RuntimeError('A protected installation step failed. Review folder permissions and enrollment status.')
     return result
 
 def protect(path):
-    command(['icacls.exe',str(path),'/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F'])
+    command([system_tool('icacls.exe'),str(path),'/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F'])
 
 def install(source,code,bundle):
     source=validate_source(source)
     if not isinstance(code,str) or not code.strip() or len(code)>199:raise ValueError('Enter a fresh one-time enrollment credential.')
     if sys.platform!='win32' or os.environ.get('PROCESSOR_ARCHITECTURE','').upper()=='ARM64':raise ValueError('This package supports Windows x64 only.')
     if not ctypes.windll.shell32.IsUserAnAdmin():raise ValueError('Run this installer with administrator approval.')
-    root=Path(os.environ['ProgramFiles'])/'Streamlined Vault Uploader';state=Path(os.environ['ProgramData'])/'StreamlinedVault'
+    root=known_folder(0x26)/'Streamlined Vault Uploader';state=known_folder(0x23)/'StreamlinedVault'
     if any(p.exists() or p.is_symlink() or (hasattr(p,'is_junction') and p.is_junction()) for p in [root,state]):raise ValueError('An installation folder already exists. Review it before installation or re-enrollment.')
-    query=subprocess.run(['schtasks.exe','/Query','/TN',TASK],stdout=subprocess.PIPE,stderr=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW)
+    query=subprocess.run([system_tool('schtasks.exe'),'/Query','/TN',TASK],stdout=subprocess.PIPE,stderr=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW)
     if query.returncode==0:raise ValueError('An uploader task already exists. Review it before installing again.')
     runtime=Path(bundle)/'python-runtime.zip';verify_runtime(runtime)
     for p in [root,state]:p.mkdir(parents=False,exist_ok=False);protect(p)
@@ -55,8 +66,8 @@ def install(source,code,bundle):
         fixtures[name]=digest.hexdigest()
     (state/'pilot-checksums.json').write_text(json.dumps(fixtures,indent=2),encoding='utf8')
     executable=subprocess.list2cmdline([str(python),str(root/'vault_agent.py'),'run','--config',str(state/'config.json')])
-    command(['schtasks.exe','/Create','/TN',TASK,'/SC','ONSTART','/RU','SYSTEM','/RL','HIGHEST','/TR',executable])
-    command(['schtasks.exe','/Run','/TN',TASK])
+    command([system_tool('schtasks.exe'),'/Create','/TN',TASK,'/SC','ONSTART','/RU','SYSTEM','/RL','HIGHEST','/TR',executable])
+    command([system_tool('schtasks.exe'),'/Run','/TN',TASK])
     return state/'pilot-checksums.json'
 
 def main():

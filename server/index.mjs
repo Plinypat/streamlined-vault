@@ -1,3 +1,4 @@
+import { recoveryRequestAllowed, uploadPrincipal, canManageUpload, createRateLimiter } from "./request-security.mjs";
 import { createMemberInvitations } from "./member-invitations.mjs";
 import { productionAuthorized } from "./activation.mjs";
 import { createDirectTransfers } from "./direct-transfers.mjs";
@@ -168,8 +169,12 @@ async function body(req, limit = 65536, raw = false) {
   const b = Buffer.concat(parts);
   if (raw) return b;
   try {
-    return JSON.parse(b.toString() || "{}");
-  } catch {
+    if (b.length && !/^application\/json(?:\s*;|$)/i.test(req.headers["content-type"] || "")) throw error(415,"Use application/json");
+    const value = JSON.parse(b.toString() || "{}");
+    need(value && typeof value === "object" && !Array.isArray(value),400,"A JSON object is required");
+    return value;
+  } catch (e) {
+    if(e.status) throw e;
     throw error(400, "Invalid JSON");
   }
 }
@@ -185,6 +190,9 @@ async function session(req) {
     ? { ...JSON.parse(s.user), csrf: s.csrf, sessionHash: s.hash }
     : null;
 }
+function publicUser(user) {
+  return {email:user.email,name:user.name,msp:!!user.msp,csrf:user.csrf};
+}
 async function login(res, user) {
   const token = randomBytes(32).toString("base64url"),
     csrf = randomBytes(24).toString("base64url");
@@ -199,7 +207,7 @@ async function login(res, user) {
     "Set-Cookie",
     `ss_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=900${demo ? "" : "; Secure"}`,
   );
-  return { ...user, csrf };
+  return publicUser({ ...user, csrf });
 }
 async function authenticate(req) {
   const auth = req.headers.authorization;
@@ -407,7 +415,7 @@ const security = createSecurityConsole({
   audit,
 });
 const memberInvitations = createMemberInvitations({db,clerk:clerkAuth,env,origin,audit,demo});
-const limits = new Map();
+const rateLimiter = createRateLimiter();
 const server = http.createServer((req, res) =>
   requestContext.run(
     { requestId: id(), method: req.method, route: "other" },
@@ -418,6 +426,7 @@ const server = http.createServer((req, res) =>
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("Referrer-Policy", "no-referrer");
       res.setHeader("X-Frame-Options", "DENY");
+      res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
       res.setHeader(
         "Content-Security-Policy",
         contentSecurityPolicy(clerkAuth?.config.frontendApi, !demo),
@@ -433,14 +442,9 @@ const server = http.createServer((req, res) =>
           method = req.method;
         context.route = routeClass(path);
         const ip = req.socket.remoteAddress;
-        const l = limits.get(ip) || { n: 0, until: Date.now() + 60000 };
-        if (l.until < Date.now()) {
-          l.n = 0;
-          l.until = Date.now() + 60000;
-        }
-        l.n++;
-        limits.set(ip, l);
-        need(l.n < 1800, 429, "Too many requests; retry shortly");
+        need(rateLimiter.allow(ip),429,"Too many requests; retry shortly");
+        if (!recoveryRequestAllowed(path, method))
+          need(!(await security.recoveryPending()),503,"Isolated recovery is blocked from production operations");
         if (
           [
             "/internal/metadata-backup",
@@ -673,6 +677,7 @@ const server = http.createServer((req, res) =>
               path.slice("/api/device".length),
             );
           if (path === "/api/me") {
+            need(!user.agent,403,"Human sign-in required");
             const tenants = await Promise.all(
               (await accessible(user)).map(async (t) => ({
                 ...t,
@@ -694,7 +699,7 @@ const server = http.createServer((req, res) =>
               })),
             );
             return send(res, 200, {
-              ...user,
+              ...publicUser(user),
               ...(user.msp
                 ? { activation: await security.activationStatus() }
                 : {}),
@@ -705,6 +710,7 @@ const server = http.createServer((req, res) =>
             });
           }
           if (path === "/api/logout" && method === "POST") {
+            need(!user.agent,403,"Human sign-in required");
             await securityLog.event("sign_out", context);
             await audit("msp", user.email, "Sign-out requested");
             if (!demo) await clerkAuth.revoke(user.clerkSessionId);
@@ -1146,6 +1152,7 @@ const server = http.createServer((req, res) =>
               await workspaceStorage.prepareBrowser(tenant);
             const previous = await db.transaction(async () => {
               await db.lock("tenant:" + tenant);
+              const access = await tenantAccess(user, tenant, true);
               if (b.requestId) {
                 const p = await one(
                   "SELECT * FROM files WHERE tenant=? AND requestid=?",
@@ -1153,6 +1160,7 @@ const server = http.createServer((req, res) =>
                   b.requestId,
                 );
                 if (p) {
+                  need(canManageUpload(user, access, p),403,"This upload belongs to another user");
                   need(
                     p.name === b.name &&
                       p.size === b.size &&
@@ -1179,7 +1187,7 @@ const server = http.createServer((req, res) =>
                 "Workspace storage allowance exceeded",
               );
               await run(
-                "INSERT INTO files(id,tenant,name,folder,size,key,status,created,requestid,storage_tenant) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO files(id,tenant,name,folder,size,key,status,created,requestid,storage_tenant,upload_actor) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 fid,
                 tenant,
                 b.name,
@@ -1190,6 +1198,7 @@ const server = http.createServer((req, res) =>
                 now(),
                 b.requestId || null,
                 storageTenant,
+                uploadPrincipal(user),
               );
               return null;
             });
@@ -1223,13 +1232,14 @@ const server = http.createServer((req, res) =>
             const input = await body(req);
             const value = await db.transaction(async () => {
               await db.lock("file:" + directPart[1]);
-              await tenantAccess(user, tenant, true);
+              const access = await tenantAccess(user, tenant, true);
               const file = await one(
                 "SELECT * FROM files WHERE id=? AND tenant=?",
                 directPart[1],
                 tenant,
               );
               need(file, 404, "Upload not found");
+              need(canManageUpload(user, access, file),403,"This upload belongs to another user");
               return await directTransfers.part(
                 file,
                 Number(directPart[2]),
@@ -1261,13 +1271,14 @@ const server = http.createServer((req, res) =>
             }
             const result = await db.transaction(async () => {
               await db.lock("file:" + ur[1]);
-              await tenantAccess(user, tenant, true);
+              const access = await tenantAccess(user, tenant, true);
               const f = await one(
                 "SELECT * FROM files WHERE id=? AND tenant=?",
                 ur[1],
                 tenant,
               );
               need(f, 404, "Upload not found");
+              need(canManageUpload(user, access, f),403,"This upload belongs to another user");
               if (method === "GET")
                 return {
                   value: {

@@ -19,7 +19,7 @@ class InstallerSafety(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             base=Path(d);source=base/'test-source';source.mkdir();programs=base/'programs';programs.mkdir();state=base/'state';state.mkdir();(state/'StreamlinedVault').mkdir()
             fake_windows=SimpleNamespace(shell32=SimpleNamespace(IsUserAnAdmin=lambda:True))
-            with patch.dict('pilot_installer.os.environ',{'ProgramFiles':str(programs),'ProgramData':str(state),'PROCESSOR_ARCHITECTURE':'AMD64'}),patch('pilot_installer.sys.platform','win32'),patch('pilot_installer.ctypes.windll',fake_windows,create=True),patch('pilot_installer.command') as command:
+            with patch.dict('pilot_installer.os.environ',{'ProgramFiles':str(programs),'ProgramData':str(state),'PROCESSOR_ARCHITECTURE':'AMD64'}),patch('pilot_installer.sys.platform','win32'),patch('pilot_installer.known_folder',side_effect=lambda n: programs if n==0x26 else state),patch('pilot_installer.ctypes.windll',fake_windows,create=True),patch('pilot_installer.command') as command:
                 with self.assertRaises(ValueError):install(source,'one-time-code',base)
                 command.assert_not_called()
     def test_empty_enrollment_never_executes_installation_commands(self):

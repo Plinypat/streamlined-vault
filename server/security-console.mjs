@@ -204,6 +204,7 @@ export function createSecurityConsole({
     );
   }
   async function storageCheck(tenant, actor) {
+    need(!(await archive.setting("recovery_review_required")), "Isolated recovery cannot test production storage");
     need(tenant, "Choose a workspace for the transfer test");
     try {
       const review = await workspaceStorage.securityReview(tenant),
@@ -305,7 +306,7 @@ export function createSecurityConsole({
       );
       if (Number(failures.count) >= 20)
         await log.alert("repeated_authentication_failures", "high");
-      if (!demo) {
+      if (!demo && !(await archive.setting("recovery_review_required"))) {
         let candidate = await db.one(
           "SELECT t.id FROM tenants t WHERE t.status='active' AND NOT EXISTS(SELECT 1 FROM security_checks c WHERE c.kind='storage' AND c.tenant=t.id AND c.created>?) ORDER BY t.id LIMIT 1",
           new Date(Date.now() - 86400000).toISOString(),
