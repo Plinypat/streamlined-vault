@@ -1406,7 +1406,7 @@ document.addEventListener("click", async (e) => {
     if (d.action === "uploaderhelp")
       return modal(
         "Set up a scheduled uploader",
-        `<p>Download the current Windows installer from Add uploader and run it on the practice computer. Source folders are selected locally, and schedules are configured in this portal.</p><p>The agent runs at startup using Windows Task Scheduler. It resumes transfers and reports bounded run summaries. It never deletes source or cloud files.</p><p>The computer must remain awake and online. This preview cannot install or contact a real uploader. Production rollout requires signed packaging, deployment configuration and live acceptance testing.</p>`,
+        `<p>Download the current Windows installer from Add uploader and run it on the practice computer. Source folders are selected locally, and schedules are configured in this portal.</p><p>The agent runs at startup using Windows Task Scheduler. It resumes transfers and reports bounded run summaries. It never deletes source or cloud files.</p><p>The computer must remain awake and online. ${config.demo || preview ? "This preview simulates setup and does not install software." : "Download the installer directly on the practice computer; no USB transfer is needed."} This remains an unsigned pilot release, and the practice pilot must pass before scheduled protection is treated as verified.</p>`,
         null,
       );
     if (d.action === "export") {
